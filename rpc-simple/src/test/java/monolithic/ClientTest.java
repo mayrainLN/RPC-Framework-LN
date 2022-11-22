@@ -1,7 +1,6 @@
 package monolithic;
 
-import studio.lh.RpcClient;
-import studio.lh.dto.RpcRequest;
+import studio.lh.RpcClientProxy;
 
 /**
  * @author :MayRain
@@ -11,18 +10,23 @@ import studio.lh.dto.RpcRequest;
  */
 public class ClientTest {
     public static void main(String[] args) {
-        RpcClient rpcClient= new RpcClient();
-        String serviceName = "ServiceTest";
-        String methodName = "reverseEcho";
-        Object[] params = new Object[]{"hello world"};
-        Class[] clazz = new Class[]{String.class};
-        RpcRequest rpcRequest = new RpcRequest(serviceName, methodName, params, clazz);
-
-        String  response =(String) rpcClient.sendRpcRequest(
-                new RpcRequest(serviceName, methodName, params, clazz),
-                "localhost",
-                5656
-        );
+        RpcClientProxy rpcClientProxy = new RpcClientProxy("127.0.0.1", 5656);
+        ServiceTest serviceTest =rpcClientProxy.getProxy(ServiceTest.class);
+        String response = serviceTest.reverseEcho("world");
         System.out.println("客户端收到结果："+response);
+
+//        RpcClient rpcClient= new RpcClient();
+//        String serviceName = "monolithic.ServiceTest";
+//        String methodName = "reverseEcho";
+//        Class[] clazz = new Class[]{String.class};
+//        Object[] params = new Object[]{"hello"};
+//        RpcRequest rpcRequest = new RpcRequest(serviceName, methodName, params, clazz);
+//
+//        String  response =(String) rpcClient.sendRpcRequest(
+//                rpcRequest,
+//                "localhost",
+//                5656
+//        );
+//        System.out.println("客户端收到结果："+response);
     }
 }
