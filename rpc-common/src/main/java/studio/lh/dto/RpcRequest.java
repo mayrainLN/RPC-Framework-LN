@@ -16,6 +16,7 @@ import java.io.Serializable;
 @Builder
 @AllArgsConstructor
 public class RpcRequest implements Serializable {
+    private static final long serialVersionUID = -7287071775732594012L;
     /**
      * 接口名
      */

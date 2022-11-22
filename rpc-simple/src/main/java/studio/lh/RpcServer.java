@@ -2,6 +2,8 @@ package studio.lh;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import studio.lh.enumeration.RpcErrorMessageEnum;
+import studio.lh.exception.RpcException;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -37,13 +39,20 @@ public class RpcServer {
      * TODO 引入Spring,扫描自定义注解然后自动注册服务
      */
     public void register(Object service, int port) {
+        if (null == service) {
+            throw new RpcException(RpcErrorMessageEnum.SERVICE_CAN_NOT_BE_NULL);
+        }
+
+        /**
+         * 如果主线程走到这里，主线程就不糊执行了，阻塞到这里一直监听请求。所以我们最终只能注册一个服务
+         */
         try (ServerSocket server = new ServerSocket(port);) {
             LOGGER.info("server starts...");
             Socket socket;
             while ((socket = server.accept()) != null) {
                 LOGGER.info("client connected");
                 // 向线程池中提交任务(创建一个,Runnable的实现类的实例,规定了要做的事情, 传入到线程池中)
-                threadPool.execute(new ServerWorkerThread(socket, service));
+                threadPool.execute(new RequestHandlerThread(socket, service));
             }
         } catch (IOException e) {
             LOGGER.error("occur IOException:", e);
