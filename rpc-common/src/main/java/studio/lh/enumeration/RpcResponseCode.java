@@ -25,5 +25,4 @@ public enum  RpcResponseCode implements Serializable {
     private final int code;
     // 响应实例的状态信息字段
     private final String message;
-
 }
