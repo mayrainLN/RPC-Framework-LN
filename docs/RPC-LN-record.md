@@ -307,3 +307,200 @@ try (ServerSocket server = new ServerSocket(port);)
 
 # [v1.0] 本地注册中心
 
+## 效果预览
+
+客户端不变，在此展示服务端
+
+![image-20221123175624635](C:\Users\mayRain\AppData\Roaming\Typora\typora-user-images\image-20221123175624635.png)
+
+
+
+## 新增内容
+
+引入本地注册中心，在服务启动监听前，预先注册好所有服务，就可以让Socket监听多个接口的调用请求。
+
+## 实现
+
+1. 抽象出Handler对象真正执行方法，不再和Runnale耦合
+
+   ```java
+   public class RpcRequestHandler {
+       private static final Logger LOGGER = LoggerFactory.getLogger(RpcRequestHandler.class);
+   
+       /**
+        *
+        * @param rpcRequest 请求DTO
+        * @param service 实现类
+        * @return
+        */
+       public Object handle(RpcRequest rpcRequest, Object service) {
+           Object result = null;
+           try {
+               result = invokeTargetMethod(rpcRequest, service);
+               LOGGER.info("service:{} successful invoke method:{}", rpcRequest.getInterfaceName(), rpcRequest.getMethodName());
+           } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+               LOGGER.error("occur exception", e);
+           }
+           return result;
+       }
+   
+       private Object invokeTargetMethod(RpcRequest rpcRequest, Object service) throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
+           // 根据方法名、参数列表类型，从实现类获取目标方法
+           Method method = service.getClass().getMethod(rpcRequest.getMethodName(), rpcRequest.getParamTypes());
+           if (null == method) {
+               return RpcResponse.fail(RpcResponseCode.NOT_FOUND_METHOD);
+           }
+           return method.invoke(service, rpcRequest.getParameters());
+       }
+   }
+   ```
+
+2. 由Runable代表一个需要执行的调用请求。所以需要传入socket和具体的handler对象以及注册中心
+
+   ```java
+   public class RpcRequestHandlerRunnable implements Runnable {
+       private static final Logger LOGGER = LoggerFactory.getLogger(RpcRequestHandlerRunnable.class);
+       private Socket socket;
+       // 处理者 由他发起真正的调用
+       private RpcRequestHandler rpcRequestHandler;
+       private ServiceRegistry serviceRegistry;
+   
+       public RpcRequestHandlerRunnable(Socket socket, RpcRequestHandler rpcRequestHandler, ServiceRegistry serviceRegistry) {
+           this.socket = socket;
+           this.rpcRequestHandler = rpcRequestHandler;
+           this.serviceRegistry = serviceRegistry;
+       }
+   
+       @Override
+       public void run() {
+           try (ObjectInputStream objectInputStream = new ObjectInputStream(socket.getInputStream());
+                ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream())) {
+               RpcRequest rpcRequest = (RpcRequest) objectInputStream.readObject();
+               String interfaceName = rpcRequest.getInterfaceName();
+               // 获取实现类
+               Object service = serviceRegistry.getService(interfaceName);
+               // 由Handler对象执行调用
+               Object result = rpcRequestHandler.handle(rpcRequest, service);
+               objectOutputStream.writeObject(RpcResponse.success(result));
+               objectOutputStream.flush();
+           } catch (IOException | ClassNotFoundException e) {
+               LOGGER.error("occur exception:", e);
+           }
+       }
+   }
+   ```
+
+3. 注册中心由`ConcurrentHashMap`承担储存功能，注册和获取服务的接口都加方法锁，保证线程安全。
+
+   ```java
+   public class DefaultServiceRegistry implements ServiceRegistry {
+       public static final Logger LOGGER = LoggerFactory.getLogger(DefaultServiceRegistry.class);
+   
+       /**
+        * key: 接口类名 （完整类名）
+        * value: 实现类
+        * TODO 当前一个接口只能对应一个实现类
+        */
+       private final Map<String, Object> serviceMap = new ConcurrentHashMap<>();
+   
+       private final Set<String> registeredService = ConcurrentHashMap.newKeySet();
+   
+       /**
+        * 加锁,保证注册的线程安全
+        * 注册某个实现类。其实现的接口是反射获取的,无需传入参数
+        * @param service 实现类
+        * @param <T> 泛型
+        */
+       @Override
+       public synchronized  <T> void register(T service) {
+           // 获取规范类名
+           String serviceName = service.getClass().getCanonicalName();
+           if (registeredService.contains(serviceName)) {
+               return;
+           }
+           registeredService.add(serviceName);
+           // 获取该实现类实现的所有接口 的Class对象
+           Class[] interfaces = service.getClass().getInterfaces();
+           if (interfaces.length == 0) {
+               // 注册的服务没有实现任何接口
+               throw new RpcException(RpcErrorMessageEnum.SERVICE_NOT_IMPLEMENT_ANY_INTERFACE);
+           }
+           for (Class i : interfaces) {
+               // 某个被实现的接口 ： 当前实现类
+               serviceMap.put(i.getCanonicalName(), service);
+           }
+           LOGGER.info("Add service: {} and interfaces:{}", serviceName, service.getClass().getInterfaces());
+       }
+   
+   
+       /**
+        * 线程安全
+        * 根据接口获取实现类
+        * @param serviceName 接口名
+        * @return 实现类
+        */
+       @Override
+       public synchronized Object getService(String serviceName) {
+           Object service = serviceMap.get(serviceName);
+           if (null == service) {
+               throw new RpcException(RpcErrorMessageEnum.SERVICE_CAN_NOT_FOUND);
+           }
+           return service;
+       }
+   }
+   ```
+
+4. RpcServer抽象为一个请求监听实例。
+   关键就是：`RpcServer`没有和`serviceRegistry`耦合。**RpcServer能够监听的接口调用，是由`serviceRegistry`决定的**。这正是 实现一个监听实例 能够监听多个接口调用的关键。
+
+   ```java
+   public class RpcServer {
+   
+       private static final int CORE_POOL_SIZE = 10;
+       private static final int MAXIMUM_POOL_SIZE_SIZE = 100;
+       private static final int KEEP_ALIVE_TIME = 1;
+       private static final int BLOCKING_QUEUE_CAPACITY = 100;
+       // 本地注册中心
+       private final ServiceRegistry serviceRegistry;
+       // 线程池用于执行方法
+       private ExecutorService threadPool;
+       // 线程中的方法执行者
+       private RpcRequestHandler rpcRequestHandler = new RpcRequestHandler();
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(RpcServer.class);
+   
+       /**
+        * 每个Server实例对应单独的线程池、Handler
+        * 只需传入注册中心即可，其他的成员都重新构造
+        * @param serviceRegistry
+        */
+       public RpcServer(ServiceRegistry serviceRegistry) {
+           this.serviceRegistry = serviceRegistry;
+           BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(BLOCKING_QUEUE_CAPACITY);
+           // 线程工厂
+           ThreadFactory threadFactory = Executors.defaultThreadFactory();
+           // 每个Server实例对应一个线程池
+           this.threadPool = new ThreadPoolExecutor(CORE_POOL_SIZE, MAXIMUM_POOL_SIZE_SIZE, KEEP_ALIVE_TIME, TimeUnit.MINUTES, workQueue, threadFactory);
+       }
+   
+       // 一个Server实例对应一个线程池
+       public void start(int port) {
+   
+           try (ServerSocket server = new ServerSocket(port);) {
+               LOGGER.info("server starts...");
+               Socket socket;
+               while ((socket = server.accept()) != null) {
+                   LOGGER.info("client connected");
+                   threadPool.execute(new RpcRequestHandlerRunnable(socket, rpcRequestHandler, serviceRegistry));
+               }
+               threadPool.shutdown();
+           } catch (IOException e) {
+               LOGGER.error("occur IOException:", e);
+           }
+       }
+   }
+   ```
+
+## TODO
+
+1. Socket通信效率低，一个线程只能服务于一个请求调用直到调用返回，引入主题：Netty。
