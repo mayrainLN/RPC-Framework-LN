@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
  * @description :
  */
 public class HelloServiceImpl2 implements HelloService {
-    private static final Logger LOGGER = LoggerFactory.getLogger(HelloServiceImpl.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(HelloServiceImpl2.class);
     @Override
     public String hello(Hello hello) {
         LOGGER.info("HelloServiceImpl收到: {}.", hello.getMessage());

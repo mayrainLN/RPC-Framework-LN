@@ -1,5 +1,9 @@
 package studio.lh;
 
+import studio.lh.registry.DefaultServiceRegistry;
+import studio.lh.registry.ServiceRegistry;
+import studio.lh.remoting.socket.RpcServer;
+
 /**
  * @author :MayRain
  * @version :1.0
@@ -8,15 +12,12 @@ package studio.lh;
  */
 public class ServiceProviderMain {
     public static void main(String[] args) {
-        RpcServer rpcServer = new RpcServer();
-        /**
-         * 主线程进入到register后，就会在while ((socket = server.accept()) != null)中阻塞、循环。
-         * 所以当前版本的代码，只能注册一个服务。
-         */
-        rpcServer.register(new HelloServiceImpl2(), 5656);
+        ServiceRegistry serviceRegistry = new DefaultServiceRegistry();
+        RpcServer rpcServer = new RpcServer(serviceRegistry);
+        serviceRegistry.register(new HelloServiceImpl());
 
-        // TODO 修改实现方式，通过map存放service解决只能注册一个service
-        System.out.println("后面的不会执行");
-        rpcServer.register(new HelloServiceImpl(), 5656);
+        rpcServer.start(5656);
+
+        System.out.println("后面的依然不会执行,需要预先注册好所有注册中心");
     }
 }

@@ -1,6 +1,6 @@
 package monolithic;
 
-import studio.lh.RpcClientProxy;
+import studio.lh.remoting.socket.RpcClientProxy;
 
 /**
  * @author :MayRain
