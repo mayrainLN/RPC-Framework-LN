@@ -1,8 +1,6 @@
 package studio.lh.dto;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
+import lombok.*;
 
 import java.io.Serializable;
 
@@ -15,7 +13,16 @@ import java.io.Serializable;
 @Data
 @Builder
 @AllArgsConstructor
+@NoArgsConstructor
+@ToString
 public class RpcRequest implements Serializable {
+    /**
+     * 请求 唯一标识
+     */
+    private String requestId;
+    /**
+     * 指定序列化版本号
+     */
     private static final long serialVersionUID = -7287071775732594012L;
     /**
      * 接口名

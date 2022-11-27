@@ -22,7 +22,7 @@
 
 服务端和客户端都要依赖于`Common`模块，其中定义DTO。 
 
-客户端中，对接口`ServiceTest`的方法调用，不需要new出来其实现类`ServiceTestImpl`，而是调用`rpcClient.sendRpcRequest
+客户端中，对接口`ServiceTest`的方法调用，不需要new出来其实现类`ServiceTestImpl`，而是调用`socketRpcClient.sendRpcRequest
 
 ```java
 public class RpcClient {
@@ -70,8 +70,8 @@ public class PpcClientProxy implements InvocationHandler {
                 .paramTypes(method.getParameterTypes())
                 .parameters(method.getParameters())
                 .build();
-        RpcClient rpcClient = new RpcClient();
-        return rpcClient;
+        RpcClient socketRpcClient = new RpcClient();
+        return socketRpcClient;
     }
 }
 
@@ -311,13 +311,13 @@ try (ServerSocket server = new ServerSocket(port);)
 
 客户端不变，在此展示服务端
 
-![image-20221123175624635](C:\Users\mayRain\AppData\Roaming\Typora\typora-user-images\image-20221123175624635.png)
+![image-20221123175624635](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211231957605.png)
 
 
 
 ## 新增内容
 
-引入本地注册中心，在服务启动监听前，预先注册好所有服务，就可以让Socket监听多个接口的调用请求。
+- 引入本地注册中心，在服务启动监听前，预先注册好所有服务，就可以让Socket监听多个接口的调用请求。
 
 ## 实现
 
@@ -504,3 +504,323 @@ try (ServerSocket server = new ServerSocket(port);)
 ## TODO
 
 1. Socket通信效率低，一个线程只能服务于一个请求调用直到调用返回，引入主题：Netty。
+2. 换一种序列化方案
+3. 移动注册中心逻辑，为后续Nacos作为注册中心作准备
+
+
+
+# [v2.0] Netty传输 | Kryo序列化
+
+## 效果预览
+
+![image-20221127193211449](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211271934654.png)
+
+![image-20221127194656949](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211271946638.png)
+
+可以看到，处理请求的都是NIO线程。
+
+## 新增内容
+
+- 使用Netty进行传输
+- 使用kryo进行序列化，替代性能低下的JDK原生序列化
+
+## 实现
+
+### kryo序列化
+
+定义序列化接口
+
+```java
+public interface Serializer {
+    /**
+     * 序列化
+     * @param obj 要序列化的对象
+     * @return 序列化后的字节数组
+     */
+    byte[] serialize(Object obj);
+
+    /**
+     * 反序列化
+     * @param bytes 序列化后的字节数组
+     * @param clazz 类
+     * @param <T>
+     * @return 反序列化的对象
+     */
+    <T> T deserialize(byte[] bytes, Class<T> clazz);
+}
+```
+
+引入kryo进行序列化
+
+```java
+/** Kryo 不是线程安全的。每个线程都应该有自己的 Kryo 对象、输入和输出实例。
+ * 因此在多线程环境中，可以考虑使用 ThreadLocal 或者对象池来保证线程安全性。
+ * ThreadLocal 牺牲空间换取线程安全 ：为每个线程都单独创建本线程专用的 kryo 对象。对于每条线程的每个 kryo 对象来说，都是顺序执行的，因此天然避免了并发安全问题。
+ */
+public class KryoSerializer implements Serializer {
+    private static final Logger LOGGER = LoggerFactory.getLogger(KryoSerializer.class);
+
+    private static final ThreadLocal<Kryo> KRYO_THREAD_LOCAL = ThreadLocal.withInitial(() -> {
+        // 一个ThreadLocal容器中只会有一个kryo实例
+        Kryo kryo = new Kryo();
+        // 为了提供性能和减小序列化结果体积，提供注册的序列化对象类的方式。
+        // 在注册时，会为该序列化类生成 int ID，后续在序列化时使用 int ID 唯一标识该类型
+        kryo.register(RpcResponse.class);
+        kryo.register(RpcRequest.class);
+
+        kryo.setReferences(false); // 关闭循环引用检测,从而提高一些性能。
+        /**
+         * 注册会给每一个class一个int类型的Id相关联，这显然比类名称高效
+         * 但同时要求反序列化的时候的Id必须与序列化过程中一致。这意味着注册的顺序非常重要。
+         */
+//        kryo.setRegistrationRequired(false); // 关闭注册行为？？？？？？？？？？？？？？？
+        return kryo;
+    });
+
+    @Override
+    public byte[] serialize(Object obj) {
+        try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+             Output output = new Output(byteArrayOutputStream)) {
+            Kryo kryo = KRYO_THREAD_LOCAL.get();
+            //将对象序列化为byte数组
+            kryo.writeObject(output, obj);
+            // kryoThreadLocal调用完之后要remove一下, 防止内存泄露
+            KRYO_THREAD_LOCAL.remove();
+            return output.toBytes();
+        } catch (Exception e) {
+            LOGGER.error("occur exception when serialize:", e);
+            throw new SerializeException("序列化失败");
+        }
+    }
+
+    @Override
+    public <T> T deserialize(byte[] bytes, Class<T> clazz) {
+        try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
+             Input input = new Input(byteArrayInputStream)) {
+            Kryo kryo = KRYO_THREAD_LOCAL.get();
+            // 从byte数组中反序列化出对对象
+            Object o = kryo.readObject(input, clazz);
+            KRYO_THREAD_LOCAL.remove();
+            // clazz.cast(o) 通过类对象，将o强类型转换
+            return clazz.cast(o);
+        } catch (Exception e) {
+            LOGGER.error("occur exception when deserialize:", e);
+            throw new SerializeException("反序列化失败");
+        }
+    }
+}
+```
+
+注意：
+
+1. ThreadLocal的remove方法，用完即删，防止内存泄露
+2. kryo的api以及背后的原理： setReferences()   register() setReferences()
+
+踩坑：
+
+`kryo`  `DTO`如果[构造方法](https://so.csdn.net/so/search?q=构造方法&spm=1001.2101.3001.7020)被重写，需要手写一个无参构造方法。否则会报错。
+
+### Netty进行传输
+
+#### 自定义的编解码器
+
+继承自Netty的ByteToMessageDecoder，所以可以作为入站处理器
+
+```java
+/**
+ * @author :MayRain
+ * @version :1.0
+ * @date :2022/11/27 15:10
+ * @description : 继承自Netty的ByteToMessageDecoder，所以可以作为入站处理器
+ */
+@AllArgsConstructor
+public class NettyKryoDecoder extends ByteToMessageDecoder {
+    private static final Logger LOGGER = LoggerFactory.getLogger(NettyKryoDecoder.class);
+
+    private Serializer serializer;
+    private Class<?> genericClass;
+
+    /**
+     * Netty传输的消息长度也就是对象序列化后对应的字节数组的大小，存储在 ByteBuf 头部
+     */
+    private static final int BODY_LENGTH = 4;
+
+    /**
+     * 重写ByteToMessageDecoder的解码方法
+     * @param channelHandlerContext
+     * @param byteBuf
+     * @param list
+     */
+    @Override
+    protected void decode(ChannelHandlerContext channelHandlerContext, ByteBuf byteBuf, List<Object> list) {
+
+        //1.byteBuf中写入的消息长度所占的字节数已经是4了，所以 byteBuf 的可读字节必须大于 4。
+        if (byteBuf.readableBytes() >= BODY_LENGTH) {
+            //2.标记当前readIndex的位置，以便后面重置readIndex 的时候使用
+            byteBuf.markReaderIndex();
+            //3.读取消息的长度
+            //注意： 消息长度是encode的时候我们自己写入的，参见 NettyKryoEncoder 的encode方法
+            int dataLength = byteBuf.readInt();
+            //4.遇到不合理的情况直接 return
+            if (dataLength < 0 || byteBuf.readableBytes() < 0) {
+                return;
+            }
+            //5.如果可读字节数小于消息长度的话，说明是不完整的消息，重置readIndex
+            if (byteBuf.readableBytes() < dataLength) {
+                byteBuf.resetReaderIndex();
+                return;
+            }
+            // 6.走到这里说明没什么问题了，可以序列化了
+            byte[] body = new byte[dataLength];
+            byteBuf.readBytes(body);
+            // 将bytes数组转换为我们需要的对象
+            Object obj = serializer.deserialize(body, genericClass);
+            // 传递解码后的结果
+            list.add(obj);
+        }
+    }
+}
+```
+
+继承MessageToByteEncoder，所以可以作为出站处理器
+
+```java
+/**
+ * @author :MayRain
+ * @version :1.0
+ * @date :2022/11/27 15:06
+ * @description : 继承MessageToByteEncoder，所以可以作为出站处理器
+ */
+@AllArgsConstructor
+public class NettyKryoEncoder extends MessageToByteEncoder<Object> {
+    private Serializer serializer;
+    private Class<?> genericClass;
+
+    /**
+     * 将对象转换为字节码然后写入到 ByteBuf 对象中
+     * LD格式
+     */
+    @Override
+    protected void encode(ChannelHandlerContext channelHandlerContext, Object o, ByteBuf byteBuf) {
+        // 这个方法是Java语言instanceof操作符的动态等效。
+        // 形参: Obj -要检查的对象 返回值: 如果obj是该类的实例，则为True
+        // 如果收到的object不是指定类型的，就无需编码。指定类型由构造NettyKryoEncoder时指定
+        if (genericClass.isInstance(o)) {
+            // 1. 将对象转换为byte
+            byte[] body = serializer.serialize(o);
+            // 2. 读取消息的长度
+            int dataLength = body.length;
+            // 3.写入消息对应的字节数组长度,writerIndex 加 4
+            byteBuf.writeInt(dataLength);
+            //4.将字节数组写入 ByteBuf 对象中
+            byteBuf.writeBytes(body);
+        }
+    }
+}
+```
+
+#### 处理业务的handler
+
+在rpc框架中，业务就是，根据请求中的方法，从注册中心选择实现类调用，返回结果
+
+下面是入站handler，用于调用服务
+
+```java
+public class NettyServerHandler extends ChannelInboundHandlerAdapter {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(NettyServerHandler.class);
+    // 服务动态调用者
+    private static RpcRequestHandler rpcRequestHandler;
+    private static ServiceRegistry serviceRegistry;
+    static {
+        rpcRequestHandler = new RpcRequestHandler();
+        serviceRegistry = new DefaultServiceRegistry();
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        try {
+            RpcRequest rpcRequest = (RpcRequest) msg;
+            LOGGER.info(String.format("server receive msg: %s", rpcRequest));
+            String interfaceName = rpcRequest.getInterfaceName();
+            // 从注册中心获取服务实现
+            Object service = serviceRegistry.getService(interfaceName);
+            // 交由给rpcRequestHandler去反射调用方法
+            Object result = rpcRequestHandler.handle(rpcRequest, service);
+            LOGGER.info(String.format("server get result: %s", result.toString()));
+            // 写会调用结果
+            ChannelFuture f = ctx.writeAndFlush(RpcResponse.success(result,rpcRequest.getRequestId()));
+            // 写会完成后关闭channel
+            f.addListener(ChannelFutureListener.CLOSE);
+        } finally {
+            /*
+            * ReferenceCountUtil.release()其实是ByteBuf.release()方法（从ReferenceCounted接口继承而来）的包装。
+            * 从InBound里读取的ByteBuf要手动释放，还有自己创建的ByteBuf要自己负责释放。这两处要调用这个release方法。
+            * write Bytebuf到OutBound时由netty负责释放，不需要手动调用release
+            * */
+            ReferenceCountUtil.release(msg);
+        }
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        LOGGER.error("server catch exception");
+        cause.printStackTrace();
+        ctx.close();
+    }
+}
+```
+
+#### 使用Netty建立server
+
+```java
+public class NettyRpcServer {
+    private static final Logger LOGGER = LoggerFactory.getLogger(NettyRpcServer.class);
+    private final int port;
+    private Serializer kryoSerializer;
+
+
+    public NettyRpcServer(int port) {
+        this.port = port;
+        kryoSerializer = new KryoSerializer();
+    }
+
+    public void run() {
+        // 用于建立连接
+        EventLoopGroup bossGroup = new NioEventLoopGroup();
+        // 用于处理业务
+        EventLoopGroup workerGroup = new NioEventLoopGroup();
+        try {
+            ServerBootstrap b = new ServerBootstrap();
+            b.group(bossGroup, workerGroup)
+                    .channel(NioServerSocketChannel.class)
+                    .handler(new LoggingHandler(LogLevel.INFO))
+                    .childHandler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        protected void initChannel(SocketChannel ch) {
+                            // RpcRequest的解码器
+                            ch.pipeline().addLast(new NettyKryoDecoder(kryoSerializer, RpcRequest.class));
+                            // RpcResponse的编码器
+                            ch.pipeline().addLast(new NettyKryoEncoder(kryoSerializer, RpcResponse.class));
+                            // 业务的
+                            ch.pipeline().addLast(new NettyServerHandler());
+                        }
+                    })
+                    // 设置tcp缓冲区
+                    .childOption(ChannelOption.TCP_NODELAY, true)
+                    .option(ChannelOption.SO_BACKLOG, 128)
+                    .option(ChannelOption.SO_KEEPALIVE, true);
+
+            // 绑定端口，同步等待绑定成功
+            ChannelFuture f = b.bind(port).sync();
+            // 等待服务端监听端口关闭
+            f.channel().closeFuture().sync();
+        } catch (InterruptedException e) {
+            LOGGER.error("occur exception when start server:", e);
+        } finally {
+            bossGroup.shutdownGracefully();
+            workerGroup.shutdownGracefully();
+        }
+    }
+}
+```

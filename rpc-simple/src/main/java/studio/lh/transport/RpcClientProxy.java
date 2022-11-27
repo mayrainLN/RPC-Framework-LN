@@ -1,10 +1,12 @@
-package studio.lh.remoting.socket;
+package studio.lh.transport;
 
 import studio.lh.dto.RpcRequest;
+import studio.lh.transport.socket.SocketRpcClient;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.UUID;
 
 /**
  * @author :MayRain
@@ -13,12 +15,13 @@ import java.lang.reflect.Proxy;
  * @description :
  */
 public class RpcClientProxy implements InvocationHandler {
-    private String host;
-    private Integer port;
+     /**
+     * 用于发送请求给服务端，对应socket和netty两种实现方式
+     */
+    private RpcClient rpcClient;
 
-    public RpcClientProxy(String host, Integer port) {
-        this.host = host;
-        this.port = port;
+    public RpcClientProxy(RpcClient rpcClient) {
+        this.rpcClient = rpcClient;
     }
 
     public <T> T getProxy(Class<T> clazz) {
@@ -34,9 +37,11 @@ public class RpcClientProxy implements InvocationHandler {
                 .paramTypes(method.getParameterTypes())
                 //BUG 傻逼 不是method.getParameters()
                 .parameters(args)
+                // 生成请求ID
+                .requestId(UUID.randomUUID().toString())
                 .build();
         // 代理过程中获得一个rpcClient的实例, 调用实例的sendRpcRequest方法
-        RpcClient rpcClient = new RpcClient();
-        return rpcClient.sendRpcRequest(rpcRequest, host, port);
+
+        return rpcClient.sendRpcRequest(rpcRequest);
     }
 }

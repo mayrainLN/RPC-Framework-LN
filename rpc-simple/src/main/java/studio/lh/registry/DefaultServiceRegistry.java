@@ -23,9 +23,9 @@ public class DefaultServiceRegistry implements ServiceRegistry {
      * value: 实现类
      * TODO 当前一个接口只能对应一个实现类
      */
-    private final Map<String, Object> serviceMap = new ConcurrentHashMap<>();
+    private static final Map<String, Object> SERVICE_MAP = new ConcurrentHashMap<>();
 
-    private final Set<String> registeredService = ConcurrentHashMap.newKeySet();
+    private static final Set<String> REGISTERED_SERVICE = ConcurrentHashMap.newKeySet();
 
     /**
      * 加锁,保证注册的线程安全
@@ -37,10 +37,10 @@ public class DefaultServiceRegistry implements ServiceRegistry {
     public synchronized  <T> void register(T service) {
         // 获取规范类名
         String serviceName = service.getClass().getCanonicalName();
-        if (registeredService.contains(serviceName)) {
+        if (REGISTERED_SERVICE.contains(serviceName)) {
             return;
         }
-        registeredService.add(serviceName);
+        REGISTERED_SERVICE.add(serviceName);
         // 获取该实现类实现的所有接口 的Class对象
         Class[] interfaces = service.getClass().getInterfaces();
         if (interfaces.length == 0) {
@@ -49,7 +49,7 @@ public class DefaultServiceRegistry implements ServiceRegistry {
         }
         for (Class i : interfaces) {
             // 某个被实现的接口 ： 当前实现类
-            serviceMap.put(i.getCanonicalName(), service);
+            SERVICE_MAP.put(i.getCanonicalName(), service);
         }
         LOGGER.info("Add service: {} and interfaces:{}", serviceName, service.getClass().getInterfaces());
     }
@@ -63,7 +63,7 @@ public class DefaultServiceRegistry implements ServiceRegistry {
      */
     @Override
     public synchronized Object getService(String serviceName) {
-        Object service = serviceMap.get(serviceName);
+        Object service = SERVICE_MAP.get(serviceName);
         if (null == service) {
             throw new RpcException(RpcErrorMessageEnum.SERVICE_CAN_NOT_FOUND);
         }

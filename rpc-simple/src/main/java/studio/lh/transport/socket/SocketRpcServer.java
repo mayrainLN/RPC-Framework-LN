@@ -1,9 +1,9 @@
-package studio.lh.remoting.socket;
+package studio.lh.transport.socket;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import studio.lh.registry.ServiceRegistry;
-import studio.lh.remoting.RpcRequestHandler;
+import studio.lh.transport.RpcRequestHandler;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -16,7 +16,7 @@ import java.util.concurrent.*;
  * @date :2022/11/21 19:36
  * @description :
  */
-public class RpcServer {
+public class SocketRpcServer {
 
     private static final int CORE_POOL_SIZE = 10;
     private static final int MAXIMUM_POOL_SIZE_SIZE = 100;
@@ -29,14 +29,14 @@ public class RpcServer {
     // 线程中的方法执行者
     private RpcRequestHandler rpcRequestHandler = new RpcRequestHandler();
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(RpcServer.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SocketRpcServer.class);
 
     /**
      * 每个Server实例对应单独的线程池、Handler
      * 只需传入注册中心即可，其他的成员都重新构造
      * @param serviceRegistry
      */
-    public RpcServer(ServiceRegistry serviceRegistry) {
+    public SocketRpcServer(ServiceRegistry serviceRegistry) {
         this.serviceRegistry = serviceRegistry;
         BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(BLOCKING_QUEUE_CAPACITY);
         // 线程工厂
@@ -53,13 +53,12 @@ public class RpcServer {
             Socket socket;
             while ((socket = server.accept()) != null) {
                 LOGGER.info("client connected");
-                threadPool.execute(new RpcRequestHandlerRunnable(socket, rpcRequestHandler, serviceRegistry));
+                threadPool.execute(new SocketRpcRequestHandlerRunnable(socket));
             }
             threadPool.shutdown();
         } catch (IOException e) {
             LOGGER.error("occur IOException:", e);
         }
     }
-
 }
 

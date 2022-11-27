@@ -1,6 +1,6 @@
 package monolithic;
 
-import studio.lh.remoting.socket.RpcClientProxy;
+import studio.lh.transport.RpcClientProxy;
 
 /**
  * @author :MayRain
@@ -10,12 +10,12 @@ import studio.lh.remoting.socket.RpcClientProxy;
  */
 public class ClientTest {
     public static void main(String[] args) {
-        RpcClientProxy rpcClientProxy = new RpcClientProxy("127.0.0.1", 5656);
-        ServiceTest serviceTest =rpcClientProxy.getProxy(ServiceTest.class);
-        String response = serviceTest.reverseEcho("world");
-        System.out.println("客户端收到结果："+response);
+//        RpcClientProxy rpcClientProxy = new RpcClientProxy("127.0.0.1", 5656);
+//        ServiceTest serviceTest =rpcClientProxy.getProxy(ServiceTest.class);
+//        String response = serviceTest.reverseEcho("world");
+//        System.out.println("客户端收到结果："+response);
 
-//        RpcClient rpcClient= new RpcClient();
+//        SocketRpcClient rpcClient= new SocketRpcClient();
 //        String serviceName = "monolithic.ServiceTest";
 //        String methodName = "reverseEcho";
 //        Class[] clazz = new Class[]{String.class};

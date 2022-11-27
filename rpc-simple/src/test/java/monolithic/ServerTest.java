@@ -1,7 +1,5 @@
 package monolithic;
 
-import studio.lh.remoting.socket.RpcServer;
-
 /**
  * @author :MayRain
  * @version :1.0
@@ -10,7 +8,7 @@ import studio.lh.remoting.socket.RpcServer;
  */
 public class ServerTest {
     public static void main(String[] args) {
-//        RpcServer rpcServer = new RpcServer();
+//        SocketRpcServer rpcServer = new SocketRpcServer();
 //        rpcServer.register(new ServiceImplTest(),5656);
     }
 }
