@@ -22,7 +22,7 @@ public class NettyClientHandler extends ChannelInboundHandlerAdapter {
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         try {
             RpcResponse rpcResponse = (RpcResponse) msg;
-            LOGGER.info(String.format("client receive msg: %s", rpcResponse));
+            LOGGER.info(String.format("rpc客户端收到信息: %s", rpcResponse));
             // 声明一个 AttributeKey 对象，类似于 Map 中的 key
             AttributeKey<RpcResponse> key = AttributeKey.valueOf("rpcResponse" + rpcResponse.getRequestId());
             /*
@@ -40,7 +40,7 @@ public class NettyClientHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        LOGGER.error("client catch exception");
+        LOGGER.error("rpc客户端捕捉到异常");
         cause.printStackTrace();
         ctx.close();
     }

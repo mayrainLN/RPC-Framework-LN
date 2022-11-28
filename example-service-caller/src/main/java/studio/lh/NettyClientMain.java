@@ -12,13 +12,12 @@ import studio.lh.transport.netty.client.NettyRpcClient;
  */
 public class NettyClientMain {
     public static void main(String[] args) {
-        RpcClient rpcClient = new NettyRpcClient("127.0.0.1", 5656);
-        RpcClientProxy rpcClientProxy = new RpcClientProxy(rpcClient);
+        RpcClient client = new NettyRpcClient();
+        RpcClientProxy rpcClientProxy = new RpcClientProxy(client);
+        // 获取代理的service实例对象
         HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
-        String hello1 = helloService.hello(new Hello("netty信息555", "netty描述555"));
-        String hello2 = helloService.hello(new Hello("netty信息666", "netty描述666"));
-        System.out.println(hello1);
-        System.out.println(hello2);
-//        assert "Hello description is netty描述444".equals(hello);
+        Hello object = new Hello("1111", "1111");
+        String res = helloService.hello(object);
+        System.out.println(res);
     }
 }

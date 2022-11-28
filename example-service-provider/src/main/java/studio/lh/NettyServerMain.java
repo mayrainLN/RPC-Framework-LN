@@ -1,6 +1,7 @@
 package studio.lh;
 
-import studio.lh.registry.DefaultServiceRegistry;
+import studio.lh.provider.ServiceProvider;
+import studio.lh.provider.ServiceProviderImpl;
 import studio.lh.transport.netty.server.NettyRpcServer;
 
 /**
@@ -11,11 +12,11 @@ import studio.lh.transport.netty.server.NettyRpcServer;
  */
 public class NettyServerMain {
     public static void main(String[] args) {
-        HelloServiceImpl helloService = new HelloServiceImpl();
-        DefaultServiceRegistry defaultServiceRegistry = new DefaultServiceRegistry();
-        // 手动注册
-        defaultServiceRegistry.register(helloService);
-        NettyRpcServer nettyRpcServer = new NettyRpcServer(5656);
-        nettyRpcServer.run();
+        HelloService helloService = new HelloServiceImpl();
+        // 向注册中心注册本机地址
+        NettyRpcServer nettyRpcServer = new NettyRpcServer("127.0.0.1", 5657);
+        // 发布本机服务
+        nettyRpcServer.publishService(helloService, HelloService.class);
+        nettyRpcServer.start();
     }
 }
