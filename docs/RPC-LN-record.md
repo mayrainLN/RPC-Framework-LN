@@ -513,16 +513,44 @@ try (ServerSocket server = new ServerSocket(port);)
 
 ## 效果预览
 
+```java
+public class NettyServerMain {
+    public static void main(String[] args) {
+        HelloServiceImpl helloService = new HelloServiceImpl();
+        ServiceProvider serviceProviderImpl = new ServiceProviderImpl();
+        // 手动注册
+        serviceProviderImpl.register(helloService);
+        NettyRpcServer nettyRpcServer = new NettyRpcServer(5656);
+        nettyRpcServer.run();
+    }
+}
+```
+
 ![image-20221127193211449](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211271934654.png)
+
+```java
+public class NettyClientMain {
+    public static void main(String[] args) {
+        RpcClient rpcClient = new NettyRpcClient("127.0.0.1", 5656);
+        RpcClientProxy rpcClientProxy = new RpcClientProxy(rpcClient);
+        HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
+        String hello1 = helloService.hello(new Hello("netty信息555", "netty描述555"));
+        String hello2 = helloService.hello(new Hello("netty信息666", "netty描述666"));
+        System.out.println(hello1);
+        System.out.println(hello2);
+//        assert "Hello description is netty描述444".equals(hello);
+    }
+}
+```
 
 ![image-20221127194656949](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211271946638.png)
 
-可以看到，处理请求的都是NIO线程。
+可以看到，处理请求的都是NIO线程，使用Netty进行NIO网络传输的目的已经达到。
 
 ## 新增内容
 
 - 使用Netty进行传输
-- 使用kryo进行序列化，替代性能低下的JDK原生序列化
+- 使用Kryo进行序列化，替代性能低下的JDK原生序列化
 
 ## 实现
 
@@ -824,3 +852,357 @@ public class NettyRpcServer {
     }
 }
 ```
+
+# [v3.0] 引入Nacos作为注册中心
+
+方法锁取消了
+
+countDownLatch
+
+原子类包装对象
+
+## 效果预览
+
+如图，NettyServerMain1 和 NettyServerMain2注册了两个服务端实例。
+
+![image-20221128170512209](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211281705232.png)
+
+注册中心数据面板，已可以看到提供HelloService服务的存活实例数为2；
+
+![image-20221128170756961](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211281707275.png)
+
+实例详情中已经存在两个不同实例的ip和地址信息：分别位于5656端口和5657端口。
+
+![image-20221128171031582](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211281710615.png)
+
+客户端可以正常地返回调用结果。可以看到是**先从Nacos拿到了服务实例的地址信息，再去连接服务实例的。**
+
+![image-20221128172507160](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211281725571.png)
+
+Socket版本的实现不在此展示。
+
+## 新增内容
+
+- 引入Nacos作为注册中心
+- 注册中心的可用性比数据强一致性更宝贵。所以选择了偏重AP的 `Nacos` 而不是 偏重CP的`Zookeeper`。
+- 重构了Client端的启动、Channel的获取。
+- 补增Socket实现。
+
+## 实现
+
+1. 抽象出每个服务器节点的ServiceMap。其实就是原来的本地注册中心。
+
+   ```java
+   public interface ServiceProvider {
+   
+           <T> void addService(T service);
+   
+           Object getService(String serviceName);
+   
+   }
+   ```
+
+   实现
+
+   ```java
+   public class ServiceProviderImpl implements ServiceProvider {
+       public static final Logger LOGGER = LoggerFactory.getLogger(ServiceProviderImpl.class);
+   
+       /**
+        * key: 接口类名 （完整类名）
+        * value: 实现类的实例对象
+        * TODO 当前一个接口只能对应一个实现类
+        */
+       private static final Map<String, Object> SERVICE_MAP = new ConcurrentHashMap<>();
+   
+       private static final Set<String> REGISTERED_SERVICE = ConcurrentHashMap.newKeySet();
+   
+       /**
+        * 将服务放入ServiceMap中
+        * 为什么又不需要加锁了呢？？
+        * @param service 实现类
+        * @param <T> 泛型
+        */
+       @Override
+       public <T> void addService(T service) {
+           // 获取规范类名
+           String serviceName = service.getClass().getCanonicalName();
+           if (REGISTERED_SERVICE.contains(serviceName)) {
+               return;
+           }
+           REGISTERED_SERVICE.add(serviceName);
+           // 获取该实现类实现的所有接口 的Class对象
+           Class[] interfaces = service.getClass().getInterfaces();
+           if (interfaces.length == 0) {
+               // 注册的服务没有实现任何接口
+               throw new RpcException(RpcErrorMessageEnum.SERVICE_NOT_IMPLEMENT_ANY_INTERFACE);
+           }
+           for (Class i : interfaces) {
+               // 某个被实现的接口 ： 当前实现类
+               SERVICE_MAP.put(i.getCanonicalName(), service);
+           }
+           LOGGER.info("Add serviceImpl: {} to interfaces:{}", serviceName, service.getClass().getInterfaces());
+       }
+   
+   
+       /**
+        * 根据接口获取实现类
+        * @param serviceName 接口名
+        * @return 实现类
+        */
+       @Override
+       public Object getService(String serviceName) {
+           Object service = SERVICE_MAP.get(serviceName);
+           if (null == service) {
+               throw new RpcException(RpcErrorMessageEnum.SERVICE_CAN_NOT_FOUND);
+           }
+           return service;
+       }
+   }
+   ```
+
+2. 抽象出远程注册中心接口
+
+   ```java
+   public interface ServiceRegistry {
+       /**
+        * 注册服务
+        * @param serviceName 注册的服务名称
+        * @param inetSocketAddress 服务地址
+        */
+       void register(String serviceName, InetSocketAddress inetSocketAddress);
+   
+       /**
+        * 查询服务
+        * @param serviceName 服务名称
+        * @return 服务地址
+        */
+       InetSocketAddress lookupService(String serviceName);
+   }
+   ```
+
+3. 依赖与Nacos的客户端，很方便的引入Nacos。仅仅只需要配置地址即可
+
+4. ```java
+   public class NacosServiceRegistry implements ServiceRegistry {
+       private static final Logger LOGGER = LoggerFactory.getLogger(NacosServiceRegistry.class);
+   
+       // 注册中心地址，先写死成本地吧
+       private static final String SERVER_ADDR = "127.0.0.1:8848";
+       private static final NamingService namingService;
+   
+       static {
+           try {
+               // 注册服务
+               namingService = NamingFactory.createNamingService(SERVER_ADDR);
+           } catch (NacosException e) {
+               LOGGER.error("连接到Nacos时有错误发生: ", e);
+               throw new RpcException(RpcErrorMessageEnum.FAILED_TO_CONNECT_TO_SERVICE_REGISTRY);
+           }
+       }
+   
+       /**
+        * 注册服务到注册中心
+        * @param serviceName 注册的服务名称
+        * @param inetSocketAddress 服务地址
+        */
+       @Override
+       public void register(String serviceName, InetSocketAddress inetSocketAddress) {
+           try {
+               namingService.registerInstance(serviceName, inetSocketAddress.getHostName(), inetSocketAddress.getPort());
+           } catch (NacosException e) {
+               LOGGER.error("注册服务时有错误发生:", e);
+               throw new RpcException(RpcErrorMessageEnum.REGISTER_SERVICE_FAILED);
+           }
+       }
+   
+       /**
+        * 从nacos注册中心获取服务实例地址
+        * @param serviceName 服务名称
+        * @return  服务实例地址
+        */
+       @Override
+       public InetSocketAddress lookupService(String serviceName) {
+           try {
+               // 获取服务实例列表
+               List<Instance> instances = namingService.getAllInstances(serviceName);
+               if (instances.size() < 1) {
+                   throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND,"暂无可用的服务实例");
+               }
+               /**
+                * 后续可以在此添加负载均衡策略
+                */
+               Instance instance = instances.get(0);
+               return new InetSocketAddress(instance.getIp(), instance.getPort());
+           } catch (NacosException e) {
+               LOGGER.error("获取服务时有错误发生:", e);
+           }
+           return null;
+       }
+   }
+   ```
+
+5. 更新RpcServer接口
+
+   ```java
+   public interface RpcServer {
+   
+       void start();
+   
+       void setSerializer(Serializer serializer);
+   
+       <T> void publishService(Object service, Class<T> serviceClass);
+   
+   }
+   
+   ```
+
+6. NettyRpcServer现在依赖于serviceProvider和serviceRegistry了。发布服务时需要发布到本地和远程的注册中心。其他基本无需变动。
+
+   ```java
+   @Override
+   public <T> void publishService(Object service, Class<T> serviceClass) {
+       // 向外提供服务前，要先设置序列化器
+       if(serializer == null) {
+           LOGGER.error("未设置序列化器");
+           throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND);
+       }
+       // 将服务注册到本地的map，键是动态获取的规范类名
+       serviceProvider.addService(service);
+       // 将服务注册到远程的注册中心
+       serviceRegistry.register(serviceClass.getCanonicalName(), new InetSocketAddress(host, port));
+   }
+   ```
+
+7. 将客户端的`Channel`和`Bootstrap`分离。配置全在`ChannelProvider`，`NettyRpcClient`只需调用`get`即可方便地获取`Channel`与不同服务端通信。
+
+   ```java
+   public class ChannelProvider {
+       private static final Logger LOGGER = LoggerFactory.getLogger(ChannelProvider.class);
+       private static EventLoopGroup eventLoopGroup;
+       private static Bootstrap bootstrap;
+       /**
+        * 默认最大重试次数
+        */
+       private static final int MAX_RETRY_COUNT = 5;
+       private static Channel channel = null;
+       
+       static {
+           bootstrap = initializeBootstrap();
+       }
+   
+       private static Bootstrap initializeBootstrap() {
+           eventLoopGroup = new NioEventLoopGroup();
+           Bootstrap bootstrap = new Bootstrap();
+           bootstrap.group(eventLoopGroup)
+                   .channel(NioSocketChannel.class)
+                   //连接的超时时间，超过这个时间还是建立不上的话则代表连接失败
+                   .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                   //是否开启 TCP 底层心跳机制
+                   .option(ChannelOption.SO_KEEPALIVE, true)
+                   //TCP默认开启了 Nagle 算法，该算法的作用是尽可能的发送大数据快，减少网络传输。TCP_NODELAY 参数的作用就是控制是否启用 Nagle 算法。
+                   .option(ChannelOption.TCP_NODELAY, true);
+           return bootstrap;
+       }
+       
+   
+       /**
+        * 获取用于发出请求的Channel
+        * @param inetSocketAddress 从注册中心获取到的服务实例的地址
+        * @param serializer 序列化器
+        * @return 于服务提供端相连的Channel
+        */
+       public static Channel get(InetSocketAddress inetSocketAddress, Serializer serializer) {
+           // 设置handler, 既然有了通信需求，所以就地设置编解码器
+           bootstrap.handler(new ChannelInitializer<SocketChannel>() {
+               @Override
+               protected void initChannel(SocketChannel ch) {
+                   /*自定义序列化编解码器*/
+                   ch.pipeline().addLast(new NettyKryoDecoder(serializer, RpcResponse.class))
+                           .addLast(new NettyKryoEncoder(serializer, RpcRequest.class))
+                           .addLast(new NettyClientHandler());
+               }
+           });
+           /**
+            * CountDownLatch是一个同步工具类，用来协调多个线程之间的同步，或者说起到线程之间的通信（而不是用作互斥的作用）。
+            * 能够使一个线程在等待另外一些线程完成各自工作之后，再继续执行。使用一个计数器进行实现。
+            * 计数器初始值为线程的数量。当每一个线程完成自己任务后，计数器的值就会减一。
+            * 当计数器的值为0时，表示所有的线程都已经完成一些任务，然后在CountDownLatch上等待的线程就可以恢复执行接下来的任务。
+            */
+           CountDownLatch countDownLatch = new CountDownLatch(1);
+           try {
+               /**
+                * 注意：执行connect的是Nio线程，所以需要等到连接建立后才能向后执行。
+                * 如果都写在一起, 直接写.sync就好了
+                */
+               connect(bootstrap, inetSocketAddress, countDownLatch);
+               // 阻塞直到countDownLatch减为1
+               countDownLatch.await();
+           } catch (InterruptedException e) {
+               LOGGER.error("获取channel时有错误发生:", e);
+           }
+           return channel;
+       }
+   
+       /**
+        * 缺省重试次数时，以MAX_RETRY_COUNT为默认
+        * @param bootstrap
+        * @param inetSocketAddress
+        * @param countDownLatch
+        */
+       private static void connect(Bootstrap bootstrap, InetSocketAddress inetSocketAddress, CountDownLatch countDownLatch) {
+           connect(bootstrap, inetSocketAddress, MAX_RETRY_COUNT, countDownLatch);
+       }
+   
+       /**
+        *
+        * @param bootstrap
+        * @param inetSocketAddress 从注册中心获取到的服务实例的地址
+        * @param retry 最大重试次数
+        * @param countDownLatch
+        */
+       private static void connect(Bootstrap bootstrap, InetSocketAddress inetSocketAddress, int retry, CountDownLatch countDownLatch) {
+           bootstrap.connect(inetSocketAddress).addListener((ChannelFutureListener) future -> {
+               if (future.isSuccess()) {
+                   LOGGER.info("client connected!");
+                   channel = future.channel();
+                   // 连接成功了
+                   countDownLatch.countDown();
+                   return;
+               }
+               if (retry == 0) {
+                   LOGGER.error("connect failed : over max retry！");
+                   countDownLatch.countDown();
+                   throw new RpcException(RpcErrorMessageEnum.CLIENT_CONNECT_SERVER_FAILURE);
+               }
+               // 第几次重连
+               int order = (MAX_RETRY_COUNT - retry) + 1;
+               // 本次重连的间隔递增
+               int delay = 1 << order;
+               LOGGER.error("{}: connect failed ：retrying for {} times……", new Date(), order);
+               bootstrap.config().group().schedule(() -> connect(bootstrap, inetSocketAddress, retry - 1, countDownLatch), delay, TimeUnit
+                       .SECONDS);
+           });
+       }
+   }
+   ```
+
+8. 改变`Handler`的执行方式。不再由NIO线程就地调用服务，而是交由给线程池。解放NIO线程，让他仅仅专心地处理事件，提高吞吐量。
+
+   ```java
+   @Override
+   public void channelRead(ChannelHandlerContext ctx, Object msg) {
+       // 交由自定义的线程池netty-server-handler 去执行业务
+       threadPool.execute(() -> {
+           try {
+               LOGGER.info("服务器接收到请求: {}", msg);
+               Object result = rpcRequestHandler.handle((RpcRequest) msg);
+               // 业务处理完，由自建线程池返回结果
+               ChannelFuture future = ctx.writeAndFlush(RpcResponse.success(result, ((RpcRequest)msg).getRequestId()));
+               future.addListener(ChannelFutureListener.CLOSE);
+           } finally {
+               ReferenceCountUtil.release(msg);
+           }
+       });
+   }
+   ```
