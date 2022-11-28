@@ -7,12 +7,15 @@ import studio.lh.dto.RpcResponse;
 import studio.lh.enumeration.RpcErrorMessageEnum;
 import studio.lh.enumeration.RpcResponseCode;
 import studio.lh.exception.RpcException;
+import studio.lh.registry.NacosServiceRegistry;
+import studio.lh.registry.ServiceRegistry;
 import studio.lh.transport.RpcClient;
 import studio.lh.util.RpcMessageChecker;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
@@ -23,12 +26,10 @@ import java.net.Socket;
  */
 public class SocketRpcClient implements RpcClient {
     public static final Logger LOGGER = LoggerFactory.getLogger(SocketRpcClient.class);
-    private String host;
-    private int port;
+    private final ServiceRegistry serviceRegistry;
 
-    public SocketRpcClient(String host, int port) {
-        this.host = host;
-        this.port = port;
+    public SocketRpcClient() {
+        serviceRegistry = new NacosServiceRegistry();
     }
 
     /**
@@ -37,7 +38,10 @@ public class SocketRpcClient implements RpcClient {
      * @return 响应数据(不包含状态码等)
      */
     public Object sendRpcRequest(RpcRequest rpcRequest) {
-        try (Socket socket = new Socket(host, port)) {
+        // 从注册中心获取服务地址
+        InetSocketAddress inetSocketAddress = serviceRegistry.lookupService(rpcRequest.getInterfaceName());
+        try (Socket socket = new Socket()) {
+            socket.connect(inetSocketAddress);
             ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
             // 向Socket中发送请求
             objectOutputStream.writeObject(rpcRequest);

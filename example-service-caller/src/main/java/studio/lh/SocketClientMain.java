@@ -12,7 +12,8 @@ import studio.lh.transport.socket.SocketRpcClient;
  */
 public class SocketClientMain {
     public static void main(String[] args) {
-        RpcClient rpcClient = new SocketRpcClient("localhost", 5656);
+        // 其中的注册中心地址已经写死了
+        RpcClient rpcClient = new SocketRpcClient();
         RpcClientProxy rpcClientProxy = new RpcClientProxy(rpcClient);
         HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
         String res = helloService.hello(new Hello("我是消息", "我是描述"));

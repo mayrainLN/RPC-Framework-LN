@@ -9,9 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
-import studio.lh.registry.DefaultServiceRegistry;
-import studio.lh.registry.ServiceRegistry;
 import studio.lh.transport.RpcRequestHandler;
+import studio.lh.util.ThreadPoolFactory;
+
+import java.util.concurrent.ExecutorService;
 
 /**
  * @author :MayRain
@@ -24,35 +25,30 @@ public class NettyServerHandler extends ChannelInboundHandlerAdapter {
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyServerHandler.class);
     // 服务动态调用者
     private static RpcRequestHandler rpcRequestHandler;
-    private static ServiceRegistry serviceRegistry;
+
+    private static final String THREAD_NAME_PREFIX = "netty-server-handler";
+
+    private static final ExecutorService THREAD_POOL;
+
     static {
         rpcRequestHandler = new RpcRequestHandler();
-        serviceRegistry = new DefaultServiceRegistry();
+        THREAD_POOL = ThreadPoolFactory.createDefaultThreadPool(THREAD_NAME_PREFIX);
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        try {
-            RpcRequest rpcRequest = (RpcRequest) msg;
-            LOGGER.info(String.format("server receive msg: %s", rpcRequest));
-            String interfaceName = rpcRequest.getInterfaceName();
-            // 从注册中心获取服务实现
-            Object service = serviceRegistry.getService(interfaceName);
-            // 交由给rpcRequestHandler去反射调用方法
-            Object result = rpcRequestHandler.handle(rpcRequest, service);
-            LOGGER.info(String.format("server get result: %s", result.toString()));
-            // 写会调用结果
-            ChannelFuture f = ctx.writeAndFlush(RpcResponse.success(result, rpcRequest.getRequestId()));
-            // 写会完成后关闭channel
-            f.addListener(ChannelFutureListener.CLOSE);
-        } finally {
-            /*
-            * ReferenceCountUtil.release()其实是ByteBuf.release()方法（从ReferenceCounted接口继承而来）的包装。
-            * 从InBound里读取的ByteBuf要手动释放，还有自己创建的ByteBuf要自己负责释放。这两处要调用这个release方法。
-            * write Bytebuf到OutBound时由netty负责释放，不需要手动调用release
-            * */
-            ReferenceCountUtil.release(msg);
-        }
+        // 交由自定义的线程池netty-server-handler 去执行业务
+        THREAD_POOL.execute(() -> {
+            try {
+                LOGGER.info("服务器接收到请求: {}", msg);
+                Object result = rpcRequestHandler.handle((RpcRequest) msg);
+                // 业务处理完，返回结果
+                ChannelFuture future = ctx.writeAndFlush(RpcResponse.success(result, ((RpcRequest) msg).getRequestId()));
+                future.addListener(ChannelFutureListener.CLOSE);
+            } finally {
+                ReferenceCountUtil.release(msg);
+            }
+        });
     }
 
     @Override
