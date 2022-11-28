@@ -1197,7 +1197,7 @@ Socket版本的实现不在此展示。
            try {
                LOGGER.info("服务器接收到请求: {}", msg);
                Object result = rpcRequestHandler.handle((RpcRequest) msg);
-               // 业务处理完，由自建线程池返回结果
+               // 业务处理完，由自建线程池的线程返回结果
                ChannelFuture future = ctx.writeAndFlush(RpcResponse.success(result, ((RpcRequest)msg).getRequestId()));
                future.addListener(ChannelFutureListener.CLOSE);
            } finally {
