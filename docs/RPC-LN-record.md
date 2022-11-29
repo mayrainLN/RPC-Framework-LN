@@ -321,7 +321,7 @@ try (ServerSocket server = new ServerSocket(port);)
 
 ## 实现
 
-1. 抽象出Handler对象真正执行方法，不再和Runnale耦合
+1. 抽象出Handler对象用于真正执行方法，不再和Runnale耦合
 
    ```java
    public class RpcRequestHandler {
@@ -895,9 +895,9 @@ Socket版本的实现不在此展示。
    ```java
    public interface ServiceProvider {
    
-           <T> void addService(T service);
+      <T> void addService(T service);
    
-           Object getService(String serviceName);
+      Object getService(String serviceName);
    
    }
    ```
@@ -983,7 +983,7 @@ Socket版本的实现不在此展示。
 
 3. 依赖与Nacos的客户端，很方便的引入Nacos。仅仅只需要配置地址即可
 
-4. ```java
+   ```java
    public class NacosServiceRegistry implements ServiceRegistry {
        private static final Logger LOGGER = LoggerFactory.getLogger(NacosServiceRegistry.class);
    
@@ -1192,7 +1192,7 @@ Socket版本的实现不在此展示。
    ```java
    @Override
    public void channelRead(ChannelHandlerContext ctx, Object msg) {
-       // 交由自定义的线程池netty-server-handler 去执行业务
+       // 交由自定义的线程池netty-server-handler 执行业务
        threadPool.execute(() -> {
            try {
                LOGGER.info("服务器接收到请求: {}", msg);
@@ -1202,7 +1202,214 @@ Socket版本的实现不在此展示。
                future.addListener(ChannelFutureListener.CLOSE);
            } finally {
                ReferenceCountUtil.release(msg);
-           }
+           }   
        });
    }
    ```
+
+# [v3.1] 服务实时注销 | 优化注册、发现逻辑 
+
+## 效果预览
+
+关闭服务进程时，自动触发回调，释放用于执行业务的线程池。
+
+![image-20221129161928229](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202211291619778.png)
+
+## 新增内容
+
+- 抽离出NacosUtil，服务端和客户端不再强依赖于Nacos。
+- 改变服务注册逻辑。服务类一次注册，只注册一个指定的接口。
+
+- 将服务发现、注册分开。
+
+- 新增服务端 关闭自动向nacos注销、关闭线程池。
+
+- 客户端Channel繁忙时释放group。
+
+## 实现
+
+1. 所有与Nacos Server的交互都交给NacosUtil。方便统一管理。
+
+   ```java
+   public class NacosUtil {
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(NacosUtil.class);
+   
+       /**
+        * 先写死注册中心的地址
+        */
+       private static final String SERVER_ADDR = "127.0.0.1:8848";
+   
+       private static final NamingService NACOS_NAMING_SERVICE = getNacosNamingService();
+   
+       /**
+        * 存储本机已经注册的服务名称，用于后续注销服务
+        */
+       private static final Set<String> REGISTERED_SERVICES_NAMES = new HashSet<>();
+   
+       /**
+        * 本机地址
+        */
+       private static InetSocketAddress address;
+   
+       public static NamingService getNacosNamingService() {
+           try {
+               return NamingFactory.createNamingService(SERVER_ADDR);
+           } catch (NacosException e) {
+               LOGGER.error("连接到Nacos时有错误发生: ", e);
+               throw new RpcException(RpcErrorMessageEnum.FAILED_TO_CONNECT_TO_SERVICE_REGISTRY);
+           }
+       }
+   
+       public static void registerService(String serviceName, InetSocketAddress address) throws NacosException {
+           NACOS_NAMING_SERVICE.registerInstance(serviceName, address.getHostName(), address.getPort());
+           // 储存本地地址
+           NacosUtil.address = address;
+           // 存储已经注册的服务
+           REGISTERED_SERVICES_NAMES.add(serviceName);
+       }
+   
+       public static List<Instance> getAllInstance(String serviceName) throws NacosException {
+           return NACOS_NAMING_SERVICE.getAllInstances(serviceName);
+       }
+   
+       /**
+        * 注销本机所有服务：遍历本机已经注册的所有服务，向Nacos发出信息
+        */
+       public static void clearRegistry() {
+           //
+           if(!REGISTERED_SERVICES_NAMES.isEmpty() && address != null) {
+               String host = address.getHostName();
+               int port = address.getPort();
+               Iterator<String> iterator = REGISTERED_SERVICES_NAMES.iterator();
+               while(iterator.hasNext()) {
+                   String serviceName = iterator.next();
+                   try {
+                       // 向nacos注销本机的服务
+                       NACOS_NAMING_SERVICE.deregisterInstance(serviceName, host, port);
+                       LOGGER.info("已注销服务: {} @ {}:{}",serviceName,host,port);
+                   } catch (NacosException e) {
+                       LOGGER.error("注销服务 {} 失败", serviceName, e);
+                   }
+               }
+           }
+       }
+   }
+   ```
+
+2. 服务端调用一次注册方法，**只注册一个指定的接口**，不再是注册实现类实现的所有接口
+   将`service` 从`Object` 替换为泛型 。在这里其实Object也无伤大雅。
+
+   ```java
+   @Override
+   public <T> void publishService(T service, Class<T> serviceClass) {
+       // 向外提供服务前，要先设置序列化器
+       if (serializer == null) {
+           LOGGER.error("未设置序列化器");
+           throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND);
+       }
+       // 将服务注册到本地的map，键是动态获取的规范类名
+       serviceProvider.addService(service,serviceClass);
+       // 将服务注册到远程的注册中心
+       serviceRegistry.register(serviceClass.getCanonicalName(), new InetSocketAddress(host, port));
+   }
+   ```
+
+3. 将注册与发现分离。客户端只用到发现，服务端只用到注册
+
+   ```java
+   public class NacosServiceRegistry implements ServiceRegistry {
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(NacosServiceRegistry.class);
+   
+       /**
+        * 注册服务到注册中心
+        * @param serviceName 注册的服务名称
+        * @param inetSocketAddress 服务地址 ip+端口
+        */
+       @Override
+       public void register(String serviceName, InetSocketAddress inetSocketAddress) {
+           try {
+               NacosUtil.registerService(serviceName, inetSocketAddress);
+           } catch (NacosException e) {
+               LOGGER.error("注册服务时有错误发生:", e);
+               throw new RpcException(RpcErrorMessageEnum.REGISTER_SERVICE_FAILED);
+           }
+       }
+   }
+   ```
+
+   ```java
+   public class NacosServiceDiscovery implements ServiceDiscovery {
+       private static final Logger LOGGER = LoggerFactory.getLogger(NacosServiceRegistry.class);
+   
+       /**
+        * 从nacos注册中心获取服务实例地址
+        * @param serviceName 服务名称
+        * @return InetSocketAddress 服务实例地址
+        */
+       @Override
+       public InetSocketAddress lookupService(String serviceName) {
+           try {
+               List<Instance> instances = NacosUtil.getAllInstance( serviceName);
+               if (instances.size() < 1) {
+                   throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND, "暂无可用的服务实例");
+               }
+               /**
+                * 后续可以在此添加负载均衡策略
+                */
+               Instance instance = instances.get(0);
+               return new InetSocketAddress(instance.getIp(), instance.getPort());
+           } catch (NacosException e) {
+               LOGGER.error("获取服务时有错误发生:", e);
+           }
+           return null;
+       }
+   }
+   ```
+
+4. 服务实例宕机时要销毁所有线程池
+
+   ```java
+   public static void shutDownAll() {
+           LOGGER.info("关闭所有线程池...");
+           threadPoolsMap.entrySet().parallelStream().forEach(entry -> {
+               ExecutorService executorService = entry.getValue();
+               executorService.shutdown();
+               LOGGER.info("关闭线程池 [{}] [{}]", entry.getKey(), executorService.isTerminated());
+               try {
+                   executorService.awaitTermination(10, TimeUnit.SECONDS);
+               } catch (InterruptedException ie) {
+                   LOGGER.error("关闭线程池失败！");
+                   executorService.shutdownNow();
+               }
+           });
+    }
+   ```
+
+   添加钩子
+
+   ```java
+   public class ShutdownHook {
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(ShutdownHook.class);
+   
+       public static void addClearAllHook() {
+           LOGGER.info("启动服务端自动注销服务功能,关闭后将自动注销所有服务、释放线程池");
+           /**
+            * 当jvm关闭的时候，会执行系统中已经设置的所有通过方法addShutdownHook添加的钩子
+            * 当系统执行完这些钩子后，jvm才会关闭。所以这些钩子可以在jvm关闭的时候进行内存清理、对象销毁等操作。
+            */
+           Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+               // 向nacos注销服务
+               NacosUtil.clearRegistry();
+               // 关闭本机所有线程池
+               ThreadPoolFactory.shutDownAll();
+           }));
+       }
+   
+   }
+   ```
+
+   
+
