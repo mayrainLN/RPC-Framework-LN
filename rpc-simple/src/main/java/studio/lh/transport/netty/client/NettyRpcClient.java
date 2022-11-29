@@ -3,7 +3,6 @@ package studio.lh.transport.netty.client;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
@@ -12,13 +11,11 @@ import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
 import studio.lh.enumeration.RpcErrorMessageEnum;
 import studio.lh.exception.RpcException;
-import studio.lh.registry.NacosServiceRegistry;
-import studio.lh.registry.ServiceRegistry;
+import studio.lh.registry.NacosServiceDiscovery;
+import studio.lh.registry.ServiceDiscovery;
 import studio.lh.serialize.Serializer;
 import studio.lh.serialize.kryo.KryoSerializer;
 import studio.lh.transport.RpcClient;
-import studio.lh.transport.netty.NettyKryoDecoder;
-import studio.lh.transport.netty.NettyKryoEncoder;
 import studio.lh.util.RpcMessageChecker;
 
 import java.net.InetSocketAddress;
@@ -33,15 +30,24 @@ import java.util.concurrent.atomic.AtomicReference;
 public class NettyRpcClient implements RpcClient {
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyRpcClient.class);
     private static Serializer serializer;
+    private static final EventLoopGroup GROUP;
+    private static final Bootstrap BOOTSTRAP;
     /**
      * 远程Nacos注册中心
      */
-    private final ServiceRegistry serviceRegistry;
+    private final ServiceDiscovery serviceDiscovery;
 
+    static {
+        GROUP = new NioEventLoopGroup();
+        BOOTSTRAP = new Bootstrap();
+        BOOTSTRAP.group(GROUP)
+                .channel(NioSocketChannel.class)
+                .option(ChannelOption.SO_KEEPALIVE, true);
+        serializer = new KryoSerializer();
+    }
 
     public NettyRpcClient() {
-        serviceRegistry = new NacosServiceRegistry();
-        serializer = new KryoSerializer();
+        this.serviceDiscovery = new NacosServiceDiscovery();
     }
 
     /**
@@ -61,25 +67,27 @@ public class NettyRpcClient implements RpcClient {
         AtomicReference<Object> result = new AtomicReference<>(null);
         try {
             // 从注册中心获取服务实例地址
-            InetSocketAddress inetSocketAddress = serviceRegistry.lookupService(rpcRequest.getInterfaceName());
+            InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest.getInterfaceName());
             // 获取连接到服务实例的channel
             Channel channel = ChannelProvider.get(inetSocketAddress, serializer);
-            if (channel.isActive()) {
-                channel.writeAndFlush(rpcRequest).addListener(future -> {
-                    if (future.isSuccess()) {
-                        LOGGER.info("客户端发送消息: {}", rpcRequest.toString());
-                    } else {
-                        LOGGER.error("发送消息时有错误发生: ", future.cause());
-                    }
-                });
-                channel.closeFuture().sync();
-                AttributeKey<RpcResponse> key = AttributeKey.valueOf("rpcResponse" + rpcRequest.getRequestId());
-                RpcResponse rpcResponse = channel.attr(key).get();
-                RpcMessageChecker.check(rpcResponse, rpcRequest);
-                result.set(rpcResponse.getData());
-            } else {
-                System.exit(0);
+            if (!channel.isActive()) {
+                GROUP.shutdownGracefully();
+                return null;
             }
+            // 写出请求
+            channel.writeAndFlush(rpcRequest).addListener(future -> {
+                if (future.isSuccess()) {
+                    LOGGER.info("客户端发送消息: {}", rpcRequest.toString());
+                } else {
+                    LOGGER.error("发送消息时有错误发生: ", future.cause());
+                }
+            });
+            // 阻塞直到Channel关闭
+            channel.closeFuture().sync();
+            AttributeKey<RpcResponse> key = AttributeKey.valueOf("rpcResponse" + rpcRequest.getRequestId());
+            RpcResponse rpcResponse = channel.attr(key).get();
+            RpcMessageChecker.check(rpcResponse, rpcRequest);
+            result.set(rpcResponse.getData());
         } catch (InterruptedException e) {
             LOGGER.error("发送消息时有错误发生: ", e);
         }

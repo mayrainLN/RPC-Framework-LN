@@ -7,9 +7,8 @@ import studio.lh.provider.ServiceProviderImpl;
 import studio.lh.registry.NacosServiceRegistry;
 import studio.lh.registry.ServiceRegistry;
 import studio.lh.serialize.Serializer;
-import studio.lh.transport.RpcRequestHandler;
 import studio.lh.transport.RpcServer;
-import studio.lh.util.ThreadPoolFactory;
+import studio.lh.factory.ThreadPoolFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -56,8 +55,8 @@ public class SocketRpcServer implements RpcServer {
     }
 
     // 一个Server实例对应一个线程池
-    public <T> void publishService(Object service, Class<T> serviceClass) {
-        serviceProvider.addService(service);
+    public <T> void publishService(T service, Class<T> serviceClass) {
+        serviceProvider.addService(service, serviceClass);
         serviceRegistry.register(serviceClass.getCanonicalName(), new InetSocketAddress(host, port));
     }
 

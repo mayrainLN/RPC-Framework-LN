@@ -28,29 +28,21 @@ public class ServiceProviderImpl implements ServiceProvider {
     private static final Set<String> REGISTERED_SERVICE = ConcurrentHashMap.newKeySet();
 
     /**
+     * 更新逻辑：按需注册接口，不再是注册实现类实现的所有接口
      * 将服务放入ServiceMap中
      * 为什么又不需要加锁了呢？？
      * @param service 实现类
      * @param <T> 泛型
      */
     @Override
-    public <T> void addService(T service) {
+    public <T> void addService(T service, Class<T> serviceClass) {
         // 获取规范类名
-        String serviceName = service.getClass().getCanonicalName();
+        String serviceName = serviceClass.getCanonicalName();
         if (REGISTERED_SERVICE.contains(serviceName)) {
             return;
         }
         REGISTERED_SERVICE.add(serviceName);
-        // 获取该实现类实现的所有接口 的Class对象
-        Class[] interfaces = service.getClass().getInterfaces();
-        if (interfaces.length == 0) {
-            // 注册的服务没有实现任何接口
-            throw new RpcException(RpcErrorMessageEnum.SERVICE_NOT_IMPLEMENT_ANY_INTERFACE);
-        }
-        for (Class i : interfaces) {
-            // 某个被实现的接口 ： 当前实现类
-            SERVICE_MAP.put(i.getCanonicalName(), service);
-        }
+        SERVICE_MAP.put(serviceName, service);
         LOGGER.info("Add serviceImpl: {} to interfaces:{}", serviceName, service.getClass().getInterfaces());
     }
 

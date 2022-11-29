@@ -7,6 +7,6 @@ package studio.lh.provider;
  * @description : 存储服务实例的信息(本地)
  */
 public interface ServiceProvider {
-    <T> void addService(T service);
+    <T> void addService(T service, Class<T> serviceClass);
     Object getService(String serviceName);
 }

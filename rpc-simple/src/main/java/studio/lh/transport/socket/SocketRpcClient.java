@@ -7,7 +7,9 @@ import studio.lh.dto.RpcResponse;
 import studio.lh.enumeration.RpcErrorMessageEnum;
 import studio.lh.enumeration.RpcResponseCode;
 import studio.lh.exception.RpcException;
+import studio.lh.registry.NacosServiceDiscovery;
 import studio.lh.registry.NacosServiceRegistry;
+import studio.lh.registry.ServiceDiscovery;
 import studio.lh.registry.ServiceRegistry;
 import studio.lh.transport.RpcClient;
 import studio.lh.util.RpcMessageChecker;
@@ -27,9 +29,11 @@ import java.net.Socket;
 public class SocketRpcClient implements RpcClient {
     public static final Logger LOGGER = LoggerFactory.getLogger(SocketRpcClient.class);
     private final ServiceRegistry serviceRegistry;
+    private final ServiceDiscovery serviceDiscovery;
 
     public SocketRpcClient() {
         serviceRegistry = new NacosServiceRegistry();
+        serviceDiscovery = new NacosServiceDiscovery();
     }
 
     /**
@@ -39,7 +43,7 @@ public class SocketRpcClient implements RpcClient {
      */
     public Object sendRpcRequest(RpcRequest rpcRequest) {
         // 从注册中心获取服务地址
-        InetSocketAddress inetSocketAddress = serviceRegistry.lookupService(rpcRequest.getInterfaceName());
+        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest.getInterfaceName());
         try (Socket socket = new Socket()) {
             socket.connect(inetSocketAddress);
             ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
@@ -59,6 +63,7 @@ public class SocketRpcClient implements RpcClient {
             }
             //校验 RpcResponse 和 RpcRequest
             RpcMessageChecker.check(rpcResponse, rpcRequest);
+            //返回成功调用的数据
             return rpcResponse.getData();
 
         } catch (IOException | ClassNotFoundException e) {

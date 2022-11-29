@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
 import studio.lh.transport.RpcRequestHandler;
-import studio.lh.util.ThreadPoolFactory;
+import studio.lh.factory.ThreadPoolFactory;
 
 import java.util.concurrent.ExecutorService;
 
@@ -23,22 +23,25 @@ import java.util.concurrent.ExecutorService;
 public class NettyServerHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyServerHandler.class);
-    // 服务动态调用者
-    private static RpcRequestHandler rpcRequestHandler;
 
     private static final String THREAD_NAME_PREFIX = "netty-server-handler";
 
-    private static final ExecutorService THREAD_POOL;
+    // 服务动态调用者
+    private final RpcRequestHandler rpcRequestHandler;
 
-    static {
+    // 执行方法的线程池
+    private final ExecutorService threadPool;
+
+    public NettyServerHandler() {
         rpcRequestHandler = new RpcRequestHandler();
-        THREAD_POOL = ThreadPoolFactory.createDefaultThreadPool(THREAD_NAME_PREFIX);
+        threadPool = ThreadPoolFactory.createDefaultThreadPool(THREAD_NAME_PREFIX);
     }
+
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         // 交由自定义的线程池netty-server-handler 去执行业务
-        THREAD_POOL.execute(() -> {
+        threadPool.execute(() -> {
             try {
                 LOGGER.info("服务器接收到请求: {}", msg);
                 Object result = rpcRequestHandler.handle((RpcRequest) msg);
