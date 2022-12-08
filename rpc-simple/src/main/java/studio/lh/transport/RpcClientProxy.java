@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
 import studio.lh.transport.socket.SocketRpcClient;
+import studio.lh.util.RpcMessageChecker;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -48,16 +49,17 @@ public class RpcClientProxy implements InvocationHandler {
                 .requestId(UUID.randomUUID().toString())
                 .build();
         // 代理过程中获得一个rpcClient的实例, 调用实例的sendRpcRequest方法
-        Object result = null;
+        RpcResponse rpcResponse = null;
         // 返回的其实是future
         CompletableFuture<RpcResponse> completableFuture = (CompletableFuture<RpcResponse>) rpcClient.sendRpcRequest(rpcRequest);
         try {
             // 阻塞直到handler向future中放入结果
-            result = completableFuture.get().getData();
+            rpcResponse = completableFuture.get();
         } catch (InterruptedException | ExecutionException e) {
             LOGGER.error("方法调用请求发送失败", e);
             return null;
         }
-        return result;
+        RpcMessageChecker.check(rpcResponse, rpcRequest);
+        return rpcResponse.getData();
     }
 }

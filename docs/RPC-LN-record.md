@@ -1704,3 +1704,116 @@ public class NettyClientMain {
        return result;
    }
    ```
+
+# [v3.2 新增负载均衡器：轮询、随机选择ServiceProvider ]
+
+## 效果预览
+
+```java
+public class NettyClientMain {
+    public static void main(String[] args) {
+        RpcClient client = new NettyRpcClient(Serializer.JSON_SERIALIZER,new RoundRobinLoadBalancer());
+        RpcClientProxy rpcClientProxy = new RpcClientProxy(client);
+        // 获取代理的service实例对象
+        HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
+        Hello object = new Hello("1111", "1111");
+        String res = helloService.hello(object);
+        System.out.println(res);
+
+        String res2 = helloService.hello(new Hello("222", "222"));
+        System.out.println(res2);
+    }
+}
+```
+
+![image-20221208235107189](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202212082351273.png)
+
+![image-20221208235125432](https://raw.githubusercontent.com/mayrainLN/picGo/main/img/202212082351647.png)
+
+可以看到，Client使用轮询负载均衡器，发出两个请求，请求平均摊送到了两个ServiceProvider实例上
+
+## 实现
+
+负载均衡器接口
+
+```java
+/**
+ * @author :MayRain
+ * @version :1.0
+ * @date :2022/12/8 22:58
+ * @description : 负载均衡器接口
+ */
+public interface LoadBalancer {
+
+    /**
+     *
+     * @param instances 注册在Nacos的节点实例列表
+     * @return 选择出的节点
+     */
+    Instance select(List<Instance> instances);
+
+}
+```
+
+两种实现
+
+```java
+public class RandomLoadBalancer implements LoadBalancer {
+    /**
+     * @param instances 注册在Nacos的节点实例列表
+     * @return 随机选择出的节点
+     */
+    @Override
+    public Instance select(List<Instance> instances) {
+        return instances.get(new Random().nextInt(instances.size()));
+    }
+}
+```
+
+```java
+public class RoundRobinLoadBalancer implements LoadBalancer {
+
+    private int index = 0;
+
+    /**
+     * @param instances 注册在Nacos的节点实例列表
+     * @return 轮询选择出的节点
+     */
+    @Override
+    public Instance select(List<Instance> instances) {
+        if(index == instances.size()) {
+            index = index % instances.size();
+        }
+        return instances.get(index++);
+    }
+}
+```
+
+两种负载均衡器实现起来非常简单。插入服务实例List，按照策略进行选择即可。
+
+要强调的是，负载均衡是在客户端完成的（想一想，是理所当然的事情）。
+
+```java
+/**
+ * 从nacos注册中心获取服务实例地址
+ * @param serviceName 服务名称
+ * @return InetSocketAddress 服务实例地址
+ */
+@Override
+public InetSocketAddress lookupService(String serviceName) {
+    try {
+        List<Instance> instances = NacosUtil.getAllInstance(serviceName);
+        if (instances.size() < 1) {
+            throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND, "暂无可用的服务实例");
+        }
+        // 负载均衡
+        Instance instance = loadBalancer.select(instances);
+        return new InetSocketAddress(instance.getIp(), instance.getPort());
+    } catch (NacosException e) {
+        LOGGER.error("获取服务时有错误发生:", e);
+    }
+    return null;
+}
+```
+
+查看Nacos客户端源码，发现Nacos客户端本地已经有了服务实例的缓存map。不用我们自己再添加了。

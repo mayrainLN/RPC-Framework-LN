@@ -27,6 +27,7 @@ public class NettyClientHandler extends ChannelInboundHandlerAdapter {
             RpcResponse rpcResponse = (RpcResponse) msg;
             // 读到响应后，更改请求的状态
             unprocessedRequests.complete(rpcResponse);
+            ctx.channel().close();
         } finally {
             // 释放引用
             ReferenceCountUtil.release(msg);

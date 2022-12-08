@@ -1,5 +1,7 @@
 package studio.lh;
 
+import studio.lh.loadbalancer.RandomLoadBalancer;
+import studio.lh.loadbalancer.RoundRobinLoadBalancer;
 import studio.lh.serialize.Serializer;
 import studio.lh.transport.RpcClient;
 import studio.lh.transport.RpcClientProxy;
@@ -15,12 +17,15 @@ import java.util.concurrent.CompletableFuture;
  */
 public class NettyClientMain {
     public static void main(String[] args) {
-        RpcClient client = new NettyRpcClient(Serializer.JSON_SERIALIZER);
+        RpcClient client = new NettyRpcClient(Serializer.JSON_SERIALIZER, new RoundRobinLoadBalancer());
         RpcClientProxy rpcClientProxy = new RpcClientProxy(client);
         // 获取代理的service实例对象
         HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
         Hello object = new Hello("1111", "1111");
         String res = helloService.hello(object);
         System.out.println(res);
+
+        String res2 = helloService.hello(new Hello("222", "222"));
+        System.out.println(res2);
     }
 }

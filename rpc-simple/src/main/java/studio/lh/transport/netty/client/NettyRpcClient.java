@@ -10,6 +10,8 @@ import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
 import studio.lh.enumeration.RpcErrorMessageEnum;
 import studio.lh.exception.RpcException;
+import studio.lh.loadbalancer.LoadBalancer;
+import studio.lh.loadbalancer.RoundRobinLoadBalancer;
 import studio.lh.registry.NacosServiceDiscovery;
 import studio.lh.registry.ServiceDiscovery;
 import studio.lh.serialize.Serializer;
@@ -52,13 +54,13 @@ public class NettyRpcClient implements RpcClient {
                 .option(ChannelOption.SO_KEEPALIVE, true);
     }
 
-    // 默认使用Kryo序列化
+    // 默认使用Kryo序列化,轮询负载均衡
     public NettyRpcClient() {
-        this(DEFAULT_SERIALIZER_CODE);
+        this(DEFAULT_SERIALIZER_CODE, new RoundRobinLoadBalancer());
     }
 
-    public NettyRpcClient(int code) {
-        serviceDiscovery = new NacosServiceDiscovery();
+    public NettyRpcClient(int code, LoadBalancer loadBalancer) {
+        serviceDiscovery = new NacosServiceDiscovery(loadBalancer);
         serializer = Serializer.getSerializer(code);
         unprocessedRequests = new UnprocessedRequests();
     }

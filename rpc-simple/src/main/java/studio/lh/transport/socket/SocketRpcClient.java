@@ -33,7 +33,8 @@ public class SocketRpcClient implements RpcClient {
 
     public SocketRpcClient() {
         serviceRegistry = new NacosServiceRegistry();
-        serviceDiscovery = new NacosServiceDiscovery();
+        //
+        serviceDiscovery = new NacosServiceDiscovery(null);
     }
 
     /**
