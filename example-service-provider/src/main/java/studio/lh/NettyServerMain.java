@@ -1,5 +1,7 @@
 package studio.lh;
 
+import studio.lh.serialize.Serializer;
+import studio.lh.serialize.kryo.KryoSerializer;
 import studio.lh.transport.netty.server.NettyRpcServer;
 import studio.lh.serviceImpl.HelloServiceImpl;
 
@@ -13,7 +15,7 @@ public class NettyServerMain {
     public static void main(String[] args) {
         HelloService helloService = new HelloServiceImpl();
         // 向注册中心注册本机地址
-        NettyRpcServer nettyRpcServer = new NettyRpcServer("127.0.0.1", 5656);
+        NettyRpcServer nettyRpcServer = new NettyRpcServer("127.0.0.1", 5656, Serializer.JSON_SERIALIZER);
         // 发布本机服务
         nettyRpcServer.publishService(helloService, HelloService.class);
         nettyRpcServer.start();

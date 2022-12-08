@@ -1,12 +1,17 @@
 package studio.lh.transport;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import studio.lh.dto.RpcRequest;
+import studio.lh.dto.RpcResponse;
 import studio.lh.transport.socket.SocketRpcClient;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 /**
  * @author :MayRain
@@ -15,6 +20,9 @@ import java.util.UUID;
  * @description : 动态代理客户端的对象
  */
 public class RpcClientProxy implements InvocationHandler {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RpcClientProxy.class);
+
      /**
      * 用于发送请求给服务端，对应socket和netty两种实现方式
      */
@@ -30,7 +38,6 @@ public class RpcClientProxy implements InvocationHandler {
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-
         RpcRequest rpcRequest = RpcRequest.builder()
                 .interfaceName(method.getDeclaringClass().getName())
                 .methodName(method.getName())
@@ -41,7 +48,16 @@ public class RpcClientProxy implements InvocationHandler {
                 .requestId(UUID.randomUUID().toString())
                 .build();
         // 代理过程中获得一个rpcClient的实例, 调用实例的sendRpcRequest方法
-
-        return rpcClient.sendRpcRequest(rpcRequest);
+        Object result = null;
+        // 返回的其实是future
+        CompletableFuture<RpcResponse> completableFuture = (CompletableFuture<RpcResponse>) rpcClient.sendRpcRequest(rpcRequest);
+        try {
+            // 阻塞直到handler向future中放入结果
+            result = completableFuture.get().getData();
+        } catch (InterruptedException | ExecutionException e) {
+            LOGGER.error("方法调用请求发送失败", e);
+            return null;
+        }
+        return result;
     }
 }

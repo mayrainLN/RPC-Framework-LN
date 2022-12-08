@@ -22,7 +22,6 @@ import studio.lh.provider.ServiceProviderImpl;
 import studio.lh.registry.NacosServiceRegistry;
 import studio.lh.registry.ServiceRegistry;
 import studio.lh.serialize.Serializer;
-import studio.lh.serialize.kryo.KryoSerializer;
 import studio.lh.transport.RpcServer;
 import studio.lh.transport.netty.NettyKryoDecoder;
 import studio.lh.transport.netty.NettyKryoEncoder;
@@ -36,6 +35,7 @@ import java.net.InetSocketAddress;
  * @description :
  */
 public class NettyRpcServer implements RpcServer {
+
     private static final Logger LOGGER = LoggerFactory.getLogger(NettyRpcServer.class);
 
     private final String host;
@@ -48,27 +48,33 @@ public class NettyRpcServer implements RpcServer {
 
     private Serializer serializer;
 
+    private static final int DEFAULT_SERIALIZER_CODE = 0;
 
 
+    /**
+     * 默认使用Kryo序列化
+     *
+     * @param host
+     * @param port
+     */
     public NettyRpcServer(String host, int port) {
-        // 默认缺省使用KryoSerializer
-        serializer = new KryoSerializer();
+        this(host, port, DEFAULT_SERIALIZER_CODE);
+    }
+
+    public NettyRpcServer(String host, int port, int code) {
         this.host = host;
         this.port = port;
         serviceRegistry = new NacosServiceRegistry();
         serviceProvider = new ServiceProviderImpl();
-    }
-
-    @Override
-    public void setSerializer(Serializer serializer) {
-        this.serializer = serializer;
+        serializer = Serializer.getSerializer(code);
     }
 
     /**
      * 服务注册
-     * @param service 服务的实例对象
+     *
+     * @param service      服务的实例对象
      * @param serviceClass 要注册的接口的class对象
-     * @param <T> 实例对象的类型
+     * @param <T>          实例对象的类型
      */
     @Override
     public <T> void publishService(T service, Class<T> serviceClass) {

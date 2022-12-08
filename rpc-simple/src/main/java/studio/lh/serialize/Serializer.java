@@ -1,5 +1,8 @@
 package studio.lh.serialize;
 
+import studio.lh.serialize.Json.JSONSerializer;
+import studio.lh.serialize.kryo.KryoSerializer;
+
 /**
  * @author :MayRain
  * @version :1.0
@@ -7,6 +10,10 @@ package studio.lh.serialize;
  * @description :
  */
 public interface Serializer {
+
+    Integer KRYO_SERIALIZER = 0;
+    Integer JSON_SERIALIZER = 1;
+
     /**
      * 序列化
      * @param obj 要序列化的对象
@@ -18,8 +25,20 @@ public interface Serializer {
      * 反序列化
      * @param bytes 序列化后的字节数组
      * @param clazz 类
-     * @param <T>
      * @return 反序列化的对象
      */
-    <T> T deserialize(byte[] bytes, Class<T> clazz);
+    Object deserialize(byte[] bytes, Class<?> clazz);
+
+    static Serializer getSerializer(int code) {
+        switch (code) {
+            case 0:
+                return new KryoSerializer();
+            case 1:
+                return new JSONSerializer();
+            default:
+                return null;
+        }
+    }
+
+    int getCode();
 }

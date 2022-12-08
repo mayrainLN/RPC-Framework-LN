@@ -25,7 +25,6 @@ import java.util.concurrent.*;
 public class SocketRpcServer implements RpcServer {
     private String host;
     private int port;
-    private Serializer serializer;
     // 注册中心
     private final ServiceRegistry serviceRegistry;
     // 服务本地Map
@@ -34,11 +33,6 @@ public class SocketRpcServer implements RpcServer {
     private ExecutorService threadPool;
     // 线程中的方法执行者
     private static final Logger LOGGER = LoggerFactory.getLogger(SocketRpcServer.class);
-
-    @Override
-    public void setSerializer(Serializer serializer) {
-        this.serializer = serializer;
-    }
 
     /**
      * 启动本机实例时要指明ip和端口

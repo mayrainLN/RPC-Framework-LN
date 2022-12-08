@@ -9,6 +9,7 @@ import studio.lh.dto.RpcRequest;
 import studio.lh.dto.RpcResponse;
 import studio.lh.exception.SerializeException;
 import studio.lh.serialize.Serializer;
+import studio.lh.serialize.SerializerCodeEnum;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -59,7 +60,12 @@ public class KryoSerializer implements Serializer {
     }
 
     @Override
-    public <T> T deserialize(byte[] bytes, Class<T> clazz) {
+    public int getCode() {
+        return SerializerCodeEnum.valueOf("KRYO").getCode();
+    }
+
+    @Override
+    public Object deserialize(byte[] bytes, Class<?> clazz) {
         try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
              Input input = new Input(byteArrayInputStream)) {
             Kryo kryo = KRYO_THREAD_LOCAL.get();
