@@ -1413,3 +1413,294 @@ Socket版本的实现不在此展示。
 
    
 
+
+
+# [v3.2 新增Jackson序列化 | 客户端使用CompetableFuture接受结果 ]
+
+## record
+
+CompletableFuture详解
+https://juejin.cn/post/6970558076642394142
+
+## 效果预览
+
+服务端使用JSON序列化
+
+```java
+public class NettyServerMain {
+    public static void main(String[] args) {
+        HelloService helloService = new HelloServiceImpl();
+        // 向注册中心注册本机地址
+        NettyRpcServer nettyRpcServer = new NettyRpcServer("127.0.0.1", 5656, Serializer.JSON_SERIALIZER);
+        // 发布本机服务
+        nettyRpcServer.publishService(helloService, HelloService.class);
+        nettyRpcServer.start();
+    }
+}
+```
+
+客户端使用JSON序列化
+
+```java
+public class NettyClientMain {
+    public static void main(String[] args) {
+        RpcClient client = new NettyRpcClient(Serializer.JSON_SERIALIZER);
+        RpcClientProxy rpcClientProxy = new RpcClientProxy(client);
+        // 获取代理的service实例对象
+        HelloService helloService = rpcClientProxy.getProxy(HelloService.class);
+        Hello object = new Hello("1111", "1111");
+        String res = helloService.hello(object);
+        System.out.println(res);
+    }
+}
+```
+
+## 新增内容
+
+- 增加JSON序列化器
+
+-  客户端使用`ConcurrentHashMap`存储已经被发出但未被响应的请求，不再是像如下这样放在channel.attr(key)上。使用CompetableFuture接受结果
+
+  ```java
+   AttributeKey<RpcResponse> key = AttributeKey.valueOf("rpcResponse" + rpcRequest.getRequestId());
+   RpcResponse rpcResponse = channel.attr(key).get();
+
+
+
+## 实现
+
+1. JSON序列化器
+
+   ```xml
+   <dependency>
+       <groupId>com.fasterxml.jackson.core</groupId>
+       <artifactId>jackson-databind</artifactId>
+       <version>${jackson.version}</version>
+   </dependency>
+   ```
+
+   ```java
+   /**
+    * @author :MayRain
+    * @version :1.0
+    * @date :2022/11/29 19:33
+    * @description : JACKSON序列化
+    */
+   public class JSONSerializer implements Serializer {
+   
+       private static final Logger LOGGER = LoggerFactory.getLogger(JSONSerializer.class);
+   
+       private ObjectMapper objectMapper = new ObjectMapper();
+   
+       @Override
+       public byte[] serialize(Object obj) {
+           try {
+               // 使用Jackson序列化为字节数组
+               return objectMapper.writeValueAsBytes(obj);
+           } catch (JsonProcessingException e) {
+               LOGGER.error("序列化时有错误发生:", e);
+               throw new SerializeException("序列化时有错误发生");
+           }
+       }
+   
+       @Override
+       public Object deserialize(byte[] bytes, Class<?> clazz) {
+           try {
+               // 读出object对象
+               Object obj = objectMapper.readValue(bytes, clazz);
+               // 服务端收到
+               if (obj instanceof RpcRequest) {
+                   obj = handleRequest(obj);
+               }
+               return obj;
+           } catch (IOException e) {
+               LOGGER.error("序列化时有错误发生:", e);
+               throw new SerializeException("序列化时有错误发生");
+           }
+       }
+   
+       /*
+           这里由于使用JSON序列化和反序列化Object数组(参数值数组)，无法保证反序列化后仍然为原参数的类型
+           需要重新判断处理
+        */
+       private Object handleRequest(Object obj) throws IOException {
+           RpcRequest rpcRequest = (RpcRequest) obj;
+           for (int i = 0; i < rpcRequest.getParamTypes().length; i++) {
+               // 获取当前request的参数信息
+               Class<?> clazz = rpcRequest.getParamTypes()[i];
+               // 检查当前的参数是否可以强转到类型列表里指定的类型
+               // 不行，重新序列化一下
+               if (!clazz.isAssignableFrom(rpcRequest.getParameters()[i].getClass())) {
+                   // 写入参数到字节数组
+                   byte[] bytes = objectMapper.writeValueAsBytes(rpcRequest.getParameters()[i]);
+                   // 重新按照类型列表里指定的类型序列化，相当于重新转换
+                   rpcRequest.getParameters()[i] = objectMapper.readValue(bytes, clazz);
+               }
+           }
+           return rpcRequest;
+       }
+   
+       @Override
+       public int getCode() {
+           return SerializerCodeEnum.valueOf("JSON").getCode();
+       }
+   }
+   ```
+
+2. 未响应请求的容器
+
+   ```java
+   public class UnprocessedRequests {
+       private static ConcurrentHashMap<String, CompletableFuture<RpcResponse>> unprocessedResponseFutures = new ConcurrentHashMap<>();
+   
+       public void put(String requestId, CompletableFuture<RpcResponse> future) {
+           unprocessedResponseFutures.put(requestId, future);
+       }
+   
+       public void remove(String requestId) {
+           unprocessedResponseFutures.remove(requestId);
+       }
+   
+       /**
+        * 返回结果后调用次方法
+        * @param rpcResponse
+        */
+       public void complete(RpcResponse rpcResponse) {
+           CompletableFuture<RpcResponse> future = unprocessedResponseFutures.remove(rpcResponse.getRequestId());
+           if (null != future) {
+               // 将response放入future
+               future.complete(rpcResponse);
+           } else {
+               throw new IllegalStateException();
+           }
+       }
+   }
+   ```
+
+3. 客户端逻辑
+
+   ```java
+   public class NettyRpcClient implements RpcClient {
+       private static final Logger LOGGER = LoggerFactory.getLogger(NettyRpcClient.class);
+   
+       private final Serializer serializer;
+   
+       private static final EventLoopGroup GROUP;
+   
+       private static final Bootstrap BOOTSTRAP;
+   
+       private static final int DEFAULT_SERIALIZER_CODE = 0;
+   
+       /**
+        * 存放客户端尚未得到响应的请求
+        */
+       private final UnprocessedRequests unprocessedRequests;
+       /**
+        * 远程Nacos注册中心
+        */
+       private final ServiceDiscovery serviceDiscovery;
+   
+       static {
+           GROUP = new NioEventLoopGroup();
+           BOOTSTRAP = new Bootstrap();
+           BOOTSTRAP.group(GROUP)
+                   .channel(NioSocketChannel.class)
+                   .option(ChannelOption.SO_KEEPALIVE, true);
+       }
+   
+       // 默认使用Kryo序列化
+       public NettyRpcClient() {
+           this(DEFAULT_SERIALIZER_CODE);
+       }
+   
+       public NettyRpcClient(int code) {
+           serviceDiscovery = new NacosServiceDiscovery();
+           serializer = Serializer.getSerializer(code);
+           unprocessedRequests = new UnprocessedRequests();
+       }
+   
+       /**
+        * 发送消息, 返回包装RpcResponse的CompletableFuture
+        * @param rpcRequest 消息体
+        * @return 服务端返回的数据
+        */
+       @Override
+       public CompletableFuture<RpcResponse> sendRpcRequest(RpcRequest rpcRequest) {
+           if (serializer == null) {
+               LOGGER.error("未设置序列化器");
+               throw new RpcException(RpcErrorMessageEnum.SERIALIZER_NOT_FOUND);
+           }
+           CompletableFuture<RpcResponse> resultFuture = new CompletableFuture<>();
+           try {
+               // 从注册中心获取服务实例地址
+               InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest.getInterfaceName());
+               // 获取连接到服务实例的channel
+               Channel channel = null;
+               try {
+                   channel = ChannelProvider.get(inetSocketAddress, serializer);
+               } catch (InterruptedException e) {
+                   e.printStackTrace();
+               }
+               if (!channel.isActive()) {
+                   GROUP.shutdownGracefully();
+                   return null;
+   
+               }
+               // 记录还未被响应的请求
+               unprocessedRequests.put(rpcRequest.getRequestId(), resultFuture);
+               // 给writeAndFlush方法返回的ChannelFuture对象添加监听器
+               channel.writeAndFlush(rpcRequest).addListener((ChannelFutureListener) future1 -> {
+                   if (future1.isSuccess()) {
+                       LOGGER.info("客户端发送消息: {}", rpcRequest.toString());
+                   } else {
+                       future1.channel().close();
+                       resultFuture.completeExceptionally(future1.cause());
+                       LOGGER.error("发送消息时有错误发生: ", future1.cause());
+                   }
+               });
+           } catch (RuntimeException e) {
+               // 清除请求
+               unprocessedRequests.remove(rpcRequest.getRequestId());
+               LOGGER.error(e.getMessage(), e);
+               /**
+                * 当你捕获InterruptException并吞下它时，你基本上阻止任何更高级别的方法/线程组注意到中断。
+                * 这可能会导致问题。
+                * 通过调用Thread.currentThread().interrupt()
+                * 设置线程的中断标志，因此更高级别的中断处理程序会注意到它并且可以正确处理它。
+                */
+               Thread.currentThread().interrupt();
+           }
+           // 返回future
+           return resultFuture;
+       }
+   }
+   ```
+
+   发起请求的代理方法：
+
+   ```java
+   @Override
+   public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+       RpcRequest rpcRequest = RpcRequest.builder()
+               .interfaceName(method.getDeclaringClass().getName())
+               .methodName(method.getName())
+               .paramTypes(method.getParameterTypes())
+               //BUG 傻逼 不是method.getParameters()
+               .parameters(args)
+               // 生成请求ID
+               .requestId(UUID.randomUUID().toString())
+               .build();
+       // 代理过程中获得一个rpcClient的实例, 调用实例的sendRpcRequest方法
+       Object result = null;
+       // 返回的其实是future
+       CompletableFuture<RpcResponse> completableFuture = (CompletableFuture<RpcResponse>) rpcClient.sendRpcRequest(rpcRequest);
+       try {
+           // 阻塞直到handler向future中放入结果
+           result = completableFuture.get().getData();
+       } catch (InterruptedException | ExecutionException e) {
+           LOGGER.error("方法调用请求发送失败", e);
+           return null;
+       }
+       return result;
+   }
+   ```
